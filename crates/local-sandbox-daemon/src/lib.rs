@@ -1,11 +1,64 @@
 //! HTTP daemon for local sandbox clients.
 
-use axum::{routing::get, Json, Router};
-use serde::Serialize;
+use axum::{
+    extract::{Path, Query, State},
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    routing::{get, post, put},
+    Json, Router,
+};
+use local_sandbox_core::{
+    CommandId, CommandWait, CreateCommandRequest, CreateSandboxRequest, CreateSnapshotRequest,
+    ExtendSandboxTimeoutRequest, InMemorySandboxProvider, SandboxError, SandboxErrorCode,
+    SandboxId, SandboxProvider, SetNetworkPolicyRequest, WriteFilesRequest,
+};
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
-/// Build the daemon router.
+/// Shared daemon application state.
+#[derive(Clone)]
+pub struct DaemonState {
+    provider: Arc<dyn SandboxProvider>,
+}
+
+impl DaemonState {
+    /// Create daemon state from a sandbox provider.
+    #[must_use]
+    pub fn new(provider: impl SandboxProvider) -> Self {
+        Self {
+            provider: Arc::new(provider),
+        }
+    }
+}
+
+/// Build the daemon router using the default in-memory provider.
 pub fn router() -> Router {
-    Router::new().route("/health", get(health))
+    router_with_state(DaemonState::new(InMemorySandboxProvider::new()))
+}
+
+/// Build the daemon router with injected provider state.
+pub fn router_with_state(state: DaemonState) -> Router {
+    Router::new()
+        .route("/health", get(health))
+        .route("/capabilities", get(capabilities))
+        .route("/sandboxes", post(create_sandbox))
+        .route(
+            "/sandboxes/{sandbox_id}",
+            get(get_sandbox).delete(delete_sandbox),
+        )
+        .route("/sandboxes/{sandbox_id}/commands", post(create_command))
+        .route(
+            "/sandboxes/{sandbox_id}/commands/{command_id}",
+            get(get_command).delete(cancel_command),
+        )
+        .route("/sandboxes/{sandbox_id}/files", post(write_files))
+        .route("/sandboxes/{sandbox_id}/timeout", post(extend_timeout))
+        .route(
+            "/sandboxes/{sandbox_id}/network-policy",
+            put(set_network_policy),
+        )
+        .route("/sandboxes/{sandbox_id}/snapshots", post(create_snapshot))
+        .with_state(state)
 }
 
 #[derive(Serialize)]
@@ -13,6 +66,394 @@ struct HealthResponse {
     ok: bool,
 }
 
+#[derive(Deserialize)]
+struct CommandQuery {
+    #[serde(default)]
+    wait: bool,
+    timeout_ms: Option<u64>,
+}
+
+#[derive(Serialize)]
+struct ErrorResponse {
+    code: SandboxErrorCode,
+    message: String,
+}
+
 async fn health() -> Json<HealthResponse> {
     Json(HealthResponse { ok: true })
+}
+
+async fn capabilities(State(state): State<DaemonState>) -> Result<impl IntoResponse, DaemonError> {
+    Ok(Json(state.provider.capabilities().await?))
+}
+
+async fn create_sandbox(
+    State(state): State<DaemonState>,
+    Json(request): Json<CreateSandboxRequest>,
+) -> Result<impl IntoResponse, DaemonError> {
+    Ok((
+        StatusCode::CREATED,
+        Json(state.provider.create_sandbox(request).await?),
+    ))
+}
+
+async fn get_sandbox(
+    State(state): State<DaemonState>,
+    Path(sandbox_id): Path<SandboxId>,
+) -> Result<impl IntoResponse, DaemonError> {
+    Ok(Json(state.provider.get_sandbox(sandbox_id).await?))
+}
+
+async fn delete_sandbox(
+    State(state): State<DaemonState>,
+    Path(sandbox_id): Path<SandboxId>,
+) -> Result<impl IntoResponse, DaemonError> {
+    Ok(Json(state.provider.delete_sandbox(sandbox_id).await?))
+}
+
+async fn create_command(
+    State(state): State<DaemonState>,
+    Path(sandbox_id): Path<SandboxId>,
+    Json(request): Json<CreateCommandRequest>,
+) -> Result<impl IntoResponse, DaemonError> {
+    Ok((
+        StatusCode::CREATED,
+        Json(state.provider.create_command(sandbox_id, request).await?),
+    ))
+}
+
+async fn get_command(
+    State(state): State<DaemonState>,
+    Path((sandbox_id, command_id)): Path<(SandboxId, CommandId)>,
+    Query(query): Query<CommandQuery>,
+) -> Result<impl IntoResponse, DaemonError> {
+    Ok(Json(
+        state
+            .provider
+            .get_command(
+                sandbox_id,
+                command_id,
+                CommandWait {
+                    wait: query.wait,
+                    timeout_ms: query.timeout_ms,
+                },
+            )
+            .await?,
+    ))
+}
+
+async fn cancel_command(
+    State(state): State<DaemonState>,
+    Path((sandbox_id, command_id)): Path<(SandboxId, CommandId)>,
+) -> Result<impl IntoResponse, DaemonError> {
+    Ok(Json(
+        state
+            .provider
+            .cancel_command(sandbox_id, command_id)
+            .await?,
+    ))
+}
+
+async fn write_files(
+    State(state): State<DaemonState>,
+    Path(sandbox_id): Path<SandboxId>,
+    Json(request): Json<WriteFilesRequest>,
+) -> Result<impl IntoResponse, DaemonError> {
+    Ok(Json(state.provider.write_files(sandbox_id, request).await?))
+}
+
+async fn extend_timeout(
+    State(state): State<DaemonState>,
+    Path(sandbox_id): Path<SandboxId>,
+    Json(request): Json<ExtendSandboxTimeoutRequest>,
+) -> Result<impl IntoResponse, DaemonError> {
+    Ok(Json(
+        state.provider.extend_timeout(sandbox_id, request).await?,
+    ))
+}
+
+async fn set_network_policy(
+    State(state): State<DaemonState>,
+    Path(sandbox_id): Path<SandboxId>,
+    Json(request): Json<SetNetworkPolicyRequest>,
+) -> Result<impl IntoResponse, DaemonError> {
+    state
+        .provider
+        .set_network_policy(sandbox_id, request)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn create_snapshot(
+    State(state): State<DaemonState>,
+    Path(sandbox_id): Path<SandboxId>,
+    Json(request): Json<CreateSnapshotRequest>,
+) -> Result<impl IntoResponse, DaemonError> {
+    Ok((
+        StatusCode::CREATED,
+        Json(state.provider.create_snapshot(sandbox_id, request).await?),
+    ))
+}
+
+struct DaemonError(SandboxError);
+
+impl From<SandboxError> for DaemonError {
+    fn from(value: SandboxError) -> Self {
+        Self(value)
+    }
+}
+
+impl IntoResponse for DaemonError {
+    fn into_response(self) -> Response {
+        let code = self.0.code();
+        let status = match self.0.code() {
+            SandboxErrorCode::SandboxNotFound | SandboxErrorCode::CommandNotFound => {
+                StatusCode::NOT_FOUND
+            }
+            SandboxErrorCode::Unsupported => StatusCode::NOT_IMPLEMENTED,
+            SandboxErrorCode::InvalidRequest => StatusCode::BAD_REQUEST,
+            SandboxErrorCode::Conflict => StatusCode::CONFLICT,
+            SandboxErrorCode::Provider => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        (
+            status,
+            Json(ErrorResponse {
+                code,
+                message: error_message(&self.0),
+            }),
+        )
+            .into_response()
+    }
+}
+
+fn error_message(error: &SandboxError) -> String {
+    if error.code() == SandboxErrorCode::Provider {
+        tracing::error!(error = %error, "provider error while handling daemon request");
+        "provider error".to_string()
+    } else {
+        error.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{body::Body, http::Request};
+    use local_sandbox_core::{
+        CommandInfo, SandboxCapabilities, SandboxInfo, SandboxStatus, SnapshotInfo,
+        WriteFilesResponse,
+    };
+    use serde::de::DeserializeOwned;
+    use serde_json::{json, Value};
+    use tower::ServiceExt;
+
+    const RESPONSE_BODY_LIMIT: usize = 1024 * 1024;
+
+    #[tokio::test]
+    async fn health_and_capabilities_routes_work() {
+        let app = test_router();
+
+        let response = app
+            .clone()
+            .oneshot(request("GET", "/health", None))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(json_body::<Value>(response).await, json!({ "ok": true }));
+
+        let response = app
+            .oneshot(request("GET", "/capabilities", None))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let capabilities = json_body::<SandboxCapabilities>(response).await;
+        assert_eq!(capabilities.provider, "in_memory");
+    }
+
+    #[tokio::test]
+    async fn sandbox_command_file_timeout_and_snapshot_routes_work() {
+        let app = test_router();
+
+        let response = app
+            .clone()
+            .oneshot(request(
+                "POST",
+                "/sandboxes",
+                Some(json!({ "architecture": "arm64", "timeout_ms": 1000 })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let sandbox = json_body::<SandboxInfo>(response).await;
+        assert_eq!(sandbox.status, SandboxStatus::Running);
+
+        let response = app
+            .clone()
+            .oneshot(request("GET", &format!("/sandboxes/{}", sandbox.id), None))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(json_body::<SandboxInfo>(response).await.id, sandbox.id);
+
+        let response = app
+            .clone()
+            .oneshot(request(
+                "POST",
+                &format!("/sandboxes/{}/commands", sandbox.id),
+                Some(json!({ "argv": ["echo", "hello"] })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let command = json_body::<CommandInfo>(response).await;
+
+        let response = app
+            .clone()
+            .oneshot(request(
+                "GET",
+                &format!(
+                    "/sandboxes/{}/commands/{}?wait=true&timeout_ms=25",
+                    sandbox.id, command.id
+                ),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(json_body::<CommandInfo>(response).await.id, command.id);
+
+        let response = app
+            .clone()
+            .oneshot(request(
+                "DELETE",
+                &format!("/sandboxes/{}/commands/{}", sandbox.id, command.id),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let response = app
+            .clone()
+            .oneshot(request(
+                "POST",
+                &format!("/sandboxes/{}/files", sandbox.id),
+                Some(json!({
+                    "files": [{
+                        "path": "/workspace/index.ts",
+                        "contents_base64": "Y29uc29sZS5sb2coJ2hpJyk=",
+                        "mode": 420
+                    }]
+                })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            json_body::<WriteFilesResponse>(response).await.paths,
+            vec!["/workspace/index.ts"]
+        );
+
+        let response = app
+            .clone()
+            .oneshot(request(
+                "POST",
+                &format!("/sandboxes/{}/timeout", sandbox.id),
+                Some(json!({ "additional_ms": 1000 })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let response = app
+            .oneshot(request(
+                "POST",
+                &format!("/sandboxes/{}/snapshots", sandbox.id),
+                Some(json!({ "label": "checkpoint" })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let snapshot = json_body::<SnapshotInfo>(response).await;
+        assert_eq!(snapshot.sandbox_id, sandbox.id);
+        assert_eq!(snapshot.label.as_deref(), Some("checkpoint"));
+    }
+
+    #[tokio::test]
+    async fn daemon_maps_provider_errors_to_http_status_codes() {
+        let app = test_router();
+        let missing_sandbox = SandboxId::new();
+
+        let response = app
+            .clone()
+            .oneshot(request(
+                "GET",
+                &format!("/sandboxes/{missing_sandbox}"),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            json_body::<Value>(response).await["code"],
+            json!("sandbox_not_found")
+        );
+
+        let response = app
+            .clone()
+            .oneshot(request("POST", "/sandboxes", Some(json!({}))))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let sandbox = json_body::<SandboxInfo>(response).await;
+
+        let response = app
+            .clone()
+            .oneshot(request(
+                "POST",
+                &format!("/sandboxes/{}/commands", sandbox.id),
+                Some(json!({ "argv": [] })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let response = app
+            .oneshot(request(
+                "PUT",
+                &format!("/sandboxes/{}/network-policy", sandbox.id),
+                Some(json!({ "mode": "deny_all" })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(
+            json_body::<Value>(response).await["code"],
+            json!("unsupported")
+        );
+    }
+
+    fn test_router() -> Router {
+        router_with_state(DaemonState::new(InMemorySandboxProvider::new()))
+    }
+
+    fn request(method: &str, uri: &str, body: Option<Value>) -> Request<Body> {
+        let mut builder = Request::builder().method(method).uri(uri);
+        if body.is_some() {
+            builder = builder.header("content-type", "application/json");
+        }
+        builder
+            .body(match body {
+                Some(value) => Body::from(value.to_string()),
+                None => Body::empty(),
+            })
+            .unwrap()
+    }
+
+    async fn json_body<T: DeserializeOwned>(response: Response) -> T {
+        let bytes = axum::body::to_bytes(response.into_body(), RESPONSE_BODY_LIMIT)
+            .await
+            .unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
 }

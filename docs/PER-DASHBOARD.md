@@ -32,7 +32,7 @@ Build a robust Rust substrate that owns local VM/service/runtime mechanics while
 
 ### PER 0 — Repository foundation
 
-Status: in progress
+Status: complete
 
 Prepare:
 - Create Rust workspace with crate boundaries matching the substrate/UI split.
@@ -51,19 +51,22 @@ Review:
 
 ### PER 1 — Contract and adapter seam
 
-Status: planned
+Status: review complete; ready for PR
 
 Prepare:
 - Extract the minimal sandbox contract from current v0 `VfkitProvider` and `@internal/sandbox` usage.
 - Define stable Rust API types and daemon routes.
 
 Execute:
-- Implement typed contract in `local-sandbox-core`.
-- Add JSON/HTTP representation in `local-sandbox-daemon`.
-- Add mock/in-memory provider tests.
+- Implemented typed contract in `local-sandbox-core`.
+- Added provider trait and in-memory provider for adapter and daemon tests.
+- Added JSON/HTTP routes in `local-sandbox-daemon` using injectable provider state.
+- Added core serde, provider lifecycle, command, file, timeout, snapshot, and daemon error tests.
 
 Review:
 - v0 adapter should be expressible as a thin client without chat/block concepts in this repo.
+- Review found no product concept leaks in crate code.
+- Review requested adapter-surface fields for create-time routes, snapshot restore, runtime, resources, userland spawning, and detached commands; these are now represented in the core contract.
 
 ### PER 2 — vfkit lifecycle substrate
 
@@ -127,3 +130,8 @@ Review:
 
 - 2026-05-20: CLI, TUI, and web UI belong in the Rust repo because they operate on substrate facts and improve diagnosability outside v0.
 - 2026-05-20: v0 product concepts stay out of the Rust repo; integration happens through a product-neutral sandbox contract.
+- 2026-05-20: PER 1 uses an in-memory provider as the daemon default so the HTTP
+ contract and adapter seam can validate before vfkit lifecycle work exists.
+- 2026-05-20: Network policy is part of the product-neutral contract, but the
+ PER 1 in-memory provider returns a typed unsupported error until a real runtime
+ provider can enforce it.
