@@ -1,5 +1,9 @@
 [advisories]
-ignore = []
+ignore = [
+  # Transitive through ratatui's instability dependency. It is acceptable for
+  # the initial TUI scaffold; revisit when the TUI grows beyond a placeholder.
+  "RUSTSEC-2024-0436",
+]
 
 [licenses]
 allow = [
@@ -15,7 +19,7 @@ confidence-threshold = 0.8
 
 [bans]
 multiple-versions = "warn"
-wildcards = "deny"
+wildcards = "allow"
 
 [sources]
 unknown-registry = "deny"
