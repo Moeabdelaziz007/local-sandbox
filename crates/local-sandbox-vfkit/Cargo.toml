@@ -11,3 +11,10 @@ workspace = true
 
 [dependencies]
 local-sandbox-core = { path = "../local-sandbox-core" }
+local-sandbox-protocol = { path = "../local-sandbox-protocol" }
+base64.workspace = true
+tokio = { workspace = true, features = ["net", "rt", "time"] }
+uuid.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

@@ -23,6 +23,7 @@ v0 should integrate through a thin client/adapter. Product concepts like chats, 
 - `local-sandbox-cli`: command-line interface
 - `local-sandbox-tui`: terminal UI
 - `local-sandbox-web`: web UI/API helpers
+- `@vercel-labs/local-sandbox-client`: sandbox-compatible TypeScript client façade over the daemon
 
 ## Development
 
@@ -30,6 +31,8 @@ v0 should integrate through a thin client/adapter. Product concepts like chats, 
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+pnpm typecheck
+pnpm test
 ```
 
 ## Contract

@@ -1,4 +1,9 @@
 /target/
+/dist/
+/node_modules/
+packages/*/dist/
+*.tsbuildinfo
+/.logs/
 **/*.rs.bk
 .DS_Store
 .env

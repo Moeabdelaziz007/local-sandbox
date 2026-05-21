@@ -1,0 +1,15 @@
+{
+  "name": "local-sandbox-workspace",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.32.1",
+  "scripts": {
+    "build": "tsc -p packages/local-sandbox-client/tsconfig.json",
+    "test": "pnpm build && node --test packages/local-sandbox-client/test/*.test.mjs",
+    "typecheck": "tsc -p packages/local-sandbox-client/tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.21",
+    "typescript": "^5.8.3"
+  }
+}

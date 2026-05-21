@@ -132,6 +132,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "base64"
+version = "0.22.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
+
+[[package]]
 name = "bitflags"
 version = "2.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -616,6 +622,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "local-sandbox-protocol"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "local-sandbox-services"
 version = "0.1.0"
 dependencies = [
@@ -633,7 +650,11 @@ dependencies = [
 name = "local-sandbox-vfkit"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "local-sandbox-core",
+ "local-sandbox-protocol",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -1100,6 +1121,7 @@ version = "1.52.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fc7f01b389ac15039e4dc9531aa973a135d7a4135281b12d7c1bc79fd57fffe"
 dependencies = [
+ "bytes",
  "libc",
  "mio",
  "pin-project-lite",
