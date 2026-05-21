@@ -145,22 +145,117 @@ Review:
 - The façade should not introduce chat/block/project concepts or reshape the Rust core around production SDK history.
 - Unsupported production features should fail with explicit, stable local errors.
 
-### PER 3 — local services substrate
+### PER 3A — compatibility recon
+
+Status: complete
+
+Prepare:
+
+- Test the interface-compatibility RFC against current v0 local substrate code.
+- Inventory S3, Postgres/KV, and route/URL expectations before implementing service substrate.
+- Use deletion of superseded v0 local code as a success signal, but do not move product semantics into this repo.
+
+Execute:
+
+- Confirmed S3 is a profile plus bounded operations subset: MinIO lifecycle, endpoint facts, credentials, bucket bootstrap, and health belong in `local-sandbox`; product bucket/key semantics stay in v0.
+- Confirmed Postgres lifecycle/profile belongs in `local-sandbox`, while chat DB schema, migrations, `kv_store` key schemas, and the Redis-shaped `PgLocalKV` shim stay in v0 until proven product-neutral.
+- Identified routes/URLs as the highest-risk compatibility surface: host-visible, guest-visible, browser-visible, websocket, callback, and S3 public endpoints need explicit taxonomy.
+- Found local compatibility gaps to carry forward: guest presigned MinIO reachability is unproven, local log console URL composition appears suspect, and `PgLocalKV` lacks `rpush`/`ltrim` used by perf tracing.
+
+Review:
+
+- Interface compatibility is the right service-boundary strategy, but profile design must start with endpoint visibility classes rather than a single URL per service.
+- S3 and Postgres should proceed profile-first; KV movement is deferred.
+- Routes and URL compatibility deserve a dedicated PER before relying on S3 or v0 integration results.
+
+### PER 3B — local profile contract
 
 Status: planned
 
 Prepare:
 
-- Define local S3/Postgres/service dependency model and health checks.
+- Define a product-neutral local profile shape for service endpoints, credentials, route facts, and health.
+- Distinguish host-visible, guest-visible, browser-visible, websocket, callback, and public object-storage endpoints.
 
 Execute:
 
-- Implement service orchestration in `local-sandbox-services`.
-- Add health/readiness tests.
+- Add profile contract types and daemon/client routes.
+- Add contract tests for profile serialization and endpoint taxonomy.
 
 Review:
 
-- Services can be started/stopped independently and surfaced through daemon status.
+- v0 should be able to consume one local profile instead of scattered local service env constants.
+
+### PER 3C — S3 service compatibility
+
+Status: planned
+
+Prepare:
+
+- Define the S3-compatible operation subset v0 actually uses.
+- Decide whether `PutBucketCors` and `ListObjectVersions` are supported locally or explicitly unsupported.
+- Prove guest-visible MinIO endpoint behavior before relying on presigned URLs from guest VMs.
+
+Execute:
+
+- Implement MinIO lifecycle/profile support in `local-sandbox-services`.
+- Add AWS SDK contract tests for the supported local S3 subset.
+
+Review:
+
+- v0 should be able to delete MinIO lifecycle and local S3 env wiring while keeping product bucket/key semantics.
+
+### PER 3D — Postgres profile / KV decision
+
+Status: planned
+
+Prepare:
+
+- Define PGlite/Postgres lifecycle and profile requirements.
+- Inventory `PgLocalKV` method coverage and gaps before deciding whether any KV compatibility belongs here.
+
+Execute:
+
+- Implement Postgres lifecycle/profile/readiness support first.
+- Keep `PgLocalKV` in v0 unless a product-neutral KV contract is proven.
+
+Review:
+
+- v0 should consume a Postgres profile while retaining chat DB schema, migrations, and product KV policy.
+
+### PER 3E — routes and URL compatibility
+
+Status: planned
+
+Prepare:
+
+- Trace sandbox route URL, preview iframe, log proxy websocket, lifecycle callback, S3 public endpoint, and guest endpoint flows.
+- Decide which URL facts belong in local profile and which remain product routing/auth semantics.
+
+Execute:
+
+- Extend route/profile contracts with the endpoint facts proven necessary.
+- Add compatibility tests for route URL helpers and local `subdomain` bridge behavior.
+
+Review:
+
+- v0 should stop composing production URL shapes from local `subdomain` values except through explicit compatibility helpers.
+
+### PER 3F — v0 integration probe
+
+Status: planned
+
+Prepare:
+
+- Identify the smallest v0 branch that selects `local-sandbox` profile/client surfaces and deletes superseded local substrate code.
+
+Execute:
+
+- Build a narrow v0 spike using local-sandbox interfaces for sandbox, profile, and service endpoints.
+
+Review:
+
+- Proceed only if the v0 diff is centralized and deletes more local substrate code than it adds.
 
 ### PER 4 — operator surfaces
 
@@ -207,3 +302,6 @@ Review:
 - 2026-05-20: PER 2 command, file, and snapshot methods use an in-memory guest-agent seam. This validates the provider contract and cleanup behavior on Linux CI before a real guest-agent protocol exists.
 - 2026-05-20: PER 2.5 ports the guest-agent protocol before real boot. The default agent keeps PER 2's in-memory path for no-socket processes and uses the protocol client when a future real process spawner supplies a Unix socket.
 - 2026-05-20: Add a sandbox-compatible TypeScript client façade over the daemon. The Rust core stays substrate-shaped; the façade absorbs `@vercel/sandbox` compatibility so v0 does not grow a large custom adapter.
+- 2026-05-21: PER 3A affirmed interface compatibility as the service-boundary strategy: `local-sandbox` owns local lifecycle/profile/readiness facts while v0 owns product bucket/key/KV schemas and routing/auth policy.
+- 2026-05-21: Local profile contracts must distinguish host-visible, guest-visible, browser-visible, websocket, callback, and public object-storage endpoints. A single URL per service is not enough.
+- 2026-05-21: `PgLocalKV` does not move into `local-sandbox` until a product-neutral KV contract is proven; Postgres lifecycle/profile moves first.
