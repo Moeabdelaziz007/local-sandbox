@@ -1166,7 +1166,7 @@ mod tests {
 
         assert_eq!(
             runner.started.lock().unwrap().as_slice(),
-            &[config.data_dir.clone()]
+            std::slice::from_ref(&config.data_dir)
         );
         assert_eq!(running.profile().health.status, LocalHealthStatus::Ready);
         running.stop().unwrap();
@@ -1201,7 +1201,7 @@ mod tests {
 
         assert_eq!(
             embedded.started.lock().unwrap().as_slice(),
-            &[config.data_dir.clone()]
+            std::slice::from_ref(&config.data_dir)
         );
         assert!(runner.started.lock().unwrap().is_empty());
         assert_eq!(running.profile().health.status, LocalHealthStatus::Ready);

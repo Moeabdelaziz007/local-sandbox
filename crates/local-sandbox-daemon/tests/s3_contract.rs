@@ -392,7 +392,7 @@ fn with_presigned_headers(
 }
 
 fn presigning_config() -> Result<PresigningConfig, Box<dyn Error>> {
-    Ok(PresigningConfig::expires_in(Duration::from_secs(60))?)
+    Ok(PresigningConfig::expires_in(Duration::from_mins(1))?)
 }
 
 fn real_minio_tests_enabled() -> bool {
