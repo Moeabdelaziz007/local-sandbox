@@ -488,7 +488,8 @@ mod tests {
         WriteFilesResponse,
     };
     use local_sandbox_services::{
-        MinioBinaryResolver, MinioProcessHandle, MinioProcessRunner, ObjectStorageHealthProbe,
+        EmbeddedObjectStorageHandle, EmbeddedObjectStorageRunner, MinioBinaryResolver,
+        MinioProcessHandle, MinioProcessRunner, ObjectStorageBackendKind, ObjectStorageHealthProbe,
         ObjectStorageService,
     };
     use serde::de::DeserializeOwned;
@@ -629,6 +630,7 @@ mod tests {
     #[tokio::test]
     async fn profile_route_reflects_daemon_owned_object_storage_manager_state() {
         let config = ObjectStorageConfig {
+            backend: ObjectStorageBackendKind::Minio,
             data_dir: std::env::temp_dir().join(format!(
                 "local-sandbox-daemon-manager-fail-test-{}",
                 std::process::id()
@@ -641,6 +643,7 @@ mod tests {
         };
         let service = ObjectStorageService::with_components(
             config.clone(),
+            Arc::new(FakeEmbeddedRunner),
             Arc::new(FakeResolver),
             Arc::new(FakeRunner),
             Arc::new(FailingProbe),
@@ -866,6 +869,23 @@ mod tests {
     }
 
     struct FakeResolver;
+
+    struct FakeEmbeddedRunner;
+
+    impl EmbeddedObjectStorageRunner for FakeEmbeddedRunner {
+        fn start(
+            &self,
+            _config: &ObjectStorageConfig,
+        ) -> SandboxResult<EmbeddedObjectStorageHandle> {
+            Ok(EmbeddedObjectStorageHandle {
+                id: "fake-embedded-s3".to_string(),
+            })
+        }
+
+        fn stop(&self, _handle: &EmbeddedObjectStorageHandle) -> SandboxResult<()> {
+            Ok(())
+        }
+    }
 
     impl MinioBinaryResolver for FakeResolver {
         fn resolve(&self, config: &ObjectStorageConfig) -> SandboxResult<PathBuf> {

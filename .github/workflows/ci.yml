@@ -28,6 +28,8 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
         run: cargo test --workspace --all-targets
+      - name: Embedded S3 contract
+        run: cargo test -p local-sandbox-daemon --features s3-contract --test s3_contract
 
   deny:
     name: Dependency policy

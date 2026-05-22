@@ -6,24 +6,34 @@ use local_sandbox_core::{
     LocalObjectStorageCapabilities, LocalObjectStorageProfile, LocalServiceProfile, SandboxError,
     SandboxResult,
 };
+use s3s::{auth::SimpleAuth, service::S3ServiceBuilder};
+use s3s_fs::FileSystem;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     env,
     ffi::OsString,
+    net::IpAddr,
     path::PathBuf,
     process::Stdio,
     sync::{Arc, Mutex},
     time::Duration,
 };
-use tokio::{net::TcpStream, process::Command, time::sleep};
+use tokio::{net::TcpStream, process::Command, sync::oneshot, task::JoinHandle, time::sleep};
 
-const DEFAULT_MINIO_API_PORT: u16 = 9_000;
+use hyper_util::{
+    rt::{TokioExecutor, TokioIo},
+    server::{conn::auto::Builder as ConnBuilder, graceful::GracefulShutdown},
+};
+
+const DEFAULT_OBJECT_STORAGE_API_PORT: u16 = 9_000;
 const DEFAULT_MINIO_CONSOLE_PORT: u16 = 9_001;
 const DEFAULT_ACCESS_KEY_ID: &str = "local-sandbox";
 const DEFAULT_SECRET_ACCESS_KEY: &str = "local-sandbox-secret";
 const DEFAULT_REGION: &str = "us-east-1";
 
+/// Environment variable for the object-storage backend implementation.
+pub const ENV_OBJECT_STORAGE_BACKEND: &str = "LOCAL_SANDBOX_OBJECT_STORAGE_BACKEND";
 /// Environment variable for an explicit `MinIO` binary path.
 pub const ENV_MINIO_BINARY: &str = "LOCAL_SANDBOX_MINIO_BINARY";
 /// Environment variable for object-storage data directory.
@@ -43,7 +53,7 @@ pub const ENV_OBJECT_STORAGE_SECRET_ACCESS_KEY: &str =
     "LOCAL_SANDBOX_OBJECT_STORAGE_SECRET_ACCESS_KEY";
 /// Environment variable for the guest-visible object-storage host.
 pub const ENV_OBJECT_STORAGE_GUEST_HOST: &str = "LOCAL_SANDBOX_OBJECT_STORAGE_GUEST_HOST";
-/// Environment variable for the object-storage process log path.
+/// Environment variable for the optional object-storage process log path.
 pub const ENV_OBJECT_STORAGE_LOG_PATH: &str = "LOCAL_SANDBOX_OBJECT_STORAGE_LOG_PATH";
 
 /// Local service kind managed by the substrate.
@@ -56,20 +66,44 @@ pub enum LocalServiceKind {
     Postgres,
 }
 
+/// Object-storage backend implementation.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ObjectStorageBackendKind {
+    /// Embedded Rust S3-compatible backend.
+    #[default]
+    Embedded,
+    /// External `MinIO` backend, retained as an optional parity/reference path.
+    Minio,
+}
+
+impl ObjectStorageBackendKind {
+    fn from_env_value(value: &str) -> SandboxResult<Self> {
+        match value {
+            "embedded" => Ok(Self::Embedded),
+            "minio" => Ok(Self::Minio),
+            _ => Err(SandboxError::invalid_request(format!(
+                "{ENV_OBJECT_STORAGE_BACKEND} must be embedded or minio"
+            ))),
+        }
+    }
+}
+
 /// Configuration for local S3-compatible object storage.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ObjectStorageConfig {
+    /// Backend implementation to use for object storage.
+    pub backend: ObjectStorageBackendKind,
     /// Directory used for object-storage data.
     pub data_dir: PathBuf,
-    /// Path to the `MinIO` server binary. If absent, `minio` is resolved from `PATH`.
+    /// Path to the `MinIO` server binary for the optional parity backend.
     pub minio_binary: Option<PathBuf>,
-    /// Host interface used by the `MinIO` API listener.
+    /// Host interface used by the object-storage API listener.
     pub api_host: String,
-    /// Host port used by the `MinIO` API listener.
+    /// Host port used by the object-storage API listener.
     pub api_port: u16,
-    /// Host interface used by the `MinIO` console listener.
+    /// Host interface used by the optional `MinIO` console listener.
     pub console_host: String,
-    /// Host port used by the `MinIO` console listener.
+    /// Host port used by the optional `MinIO` console listener.
     pub console_port: u16,
     /// Host name used by clients in the host process namespace.
     pub host_endpoint_host: String,
@@ -77,11 +111,11 @@ pub struct ObjectStorageConfig {
     pub guest_endpoint_host: String,
     /// Region used by S3-compatible clients.
     pub region: String,
-    /// Access key identifier for `MinIO` root credentials.
+    /// Access key identifier for S3-compatible credentials.
     pub access_key_id: String,
-    /// Secret access key for `MinIO` root credentials.
+    /// Secret access key for S3-compatible credentials.
     pub secret_access_key: String,
-    /// Optional file path where `MinIO` logs are written by the process runner.
+    /// Optional file path where process-backed backends write stdout/stderr.
     pub log_path: Option<PathBuf>,
     /// Startup readiness deadline.
     pub readiness_timeout: Duration,
@@ -90,12 +124,15 @@ pub struct ObjectStorageConfig {
 impl Default for ObjectStorageConfig {
     fn default() -> Self {
         let api_host = "127.0.0.1".to_string();
-        let api_port = DEFAULT_MINIO_API_PORT;
+        let api_port = DEFAULT_OBJECT_STORAGE_API_PORT;
         let console_host = "127.0.0.1".to_string();
         let console_port = DEFAULT_MINIO_CONSOLE_PORT;
 
         Self {
-            data_dir: env::temp_dir().join("local-sandbox").join("minio-data"),
+            backend: ObjectStorageBackendKind::Embedded,
+            data_dir: env::temp_dir()
+                .join("local-sandbox")
+                .join("object-storage-data"),
             minio_binary: None,
             api_host,
             api_port,
@@ -106,7 +143,11 @@ impl Default for ObjectStorageConfig {
             region: DEFAULT_REGION.to_string(),
             access_key_id: DEFAULT_ACCESS_KEY_ID.to_string(),
             secret_access_key: DEFAULT_SECRET_ACCESS_KEY.to_string(),
-            log_path: Some(env::temp_dir().join("local-sandbox").join("minio.log")),
+            log_path: Some(
+                env::temp_dir()
+                    .join("local-sandbox")
+                    .join("object-storage.log"),
+            ),
             readiness_timeout: Duration::from_secs(30),
         }
     }
@@ -121,7 +162,11 @@ impl ObjectStorageConfig {
     fn from_env_reader(mut read: impl FnMut(&str) -> Option<OsString>) -> SandboxResult<Self> {
         let mut config = Self::default();
 
+        if let Some(value) = read_env_string(&mut read, ENV_OBJECT_STORAGE_BACKEND)? {
+            config.backend = ObjectStorageBackendKind::from_env_value(&value)?;
+        }
         if let Some(value) = read_env_path(&mut read, ENV_MINIO_BINARY) {
+            config.backend = ObjectStorageBackendKind::Minio;
             config.minio_binary = Some(value);
         }
         if let Some(value) = read_env_path(&mut read, ENV_OBJECT_STORAGE_DATA_DIR) {
@@ -264,7 +309,7 @@ fn endpoint(
     }
 }
 
-/// Build an unknown-health local object-storage profile without starting `MinIO`.
+/// Build an unknown-health local object-storage profile without starting a backend.
 #[must_use]
 pub fn object_storage_profile(config: &ObjectStorageConfig) -> LocalServiceProfile {
     config.profile(&unknown_health())
@@ -410,7 +455,7 @@ impl ObjectStorageManager {
             ObjectStorageManagerPhase::Running => state.running.as_ref().map_or_else(
                 || {
                     self.inner.service.config.profile(&failed_health(
-                        "object-storage running state is missing process handle",
+                        "object-storage running state is missing runtime handle",
                     ))
                 },
                 RunningObjectStorage::profile,
@@ -447,6 +492,7 @@ impl ObjectStorageManager {
 #[derive(Clone)]
 pub struct ObjectStorageService {
     config: ObjectStorageConfig,
+    embedded_runner: Arc<dyn EmbeddedObjectStorageRunner>,
     binary_resolver: Arc<dyn MinioBinaryResolver>,
     process_runner: Arc<dyn MinioProcessRunner>,
     health_probe: Arc<dyn ObjectStorageHealthProbe>,
@@ -458,6 +504,7 @@ impl ObjectStorageService {
     pub fn new(config: ObjectStorageConfig) -> Self {
         Self::with_components(
             config,
+            Arc::new(TokioEmbeddedObjectStorageRunner::default()),
             Arc::new(PathMinioBinaryResolver),
             Arc::new(TokioMinioProcessRunner::default()),
             Arc::new(TcpObjectStorageHealthProbe),
@@ -468,12 +515,14 @@ impl ObjectStorageService {
     #[must_use]
     pub fn with_components(
         config: ObjectStorageConfig,
+        embedded_runner: Arc<dyn EmbeddedObjectStorageRunner>,
         binary_resolver: Arc<dyn MinioBinaryResolver>,
         process_runner: Arc<dyn MinioProcessRunner>,
         health_probe: Arc<dyn ObjectStorageHealthProbe>,
     ) -> Self {
         Self {
             config,
+            embedded_runner,
             binary_resolver,
             process_runner,
             health_probe,
@@ -486,8 +535,37 @@ impl ObjectStorageService {
         object_storage_profile(&self.config)
     }
 
-    /// Start `MinIO` and wait for the configured health probe.
+    /// Start object storage and wait for the configured health probe.
     pub async fn start(&self) -> SandboxResult<RunningObjectStorage> {
+        match self.config.backend {
+            ObjectStorageBackendKind::Embedded => self.start_embedded().await,
+            ObjectStorageBackendKind::Minio => self.start_minio().await,
+        }
+    }
+
+    async fn start_embedded(&self) -> SandboxResult<RunningObjectStorage> {
+        std::fs::create_dir_all(&self.config.data_dir).map_err(|error| {
+            SandboxError::provider(format!(
+                "create object-storage data dir {}: {error}",
+                self.config.data_dir.display()
+            ))
+        })?;
+        let handle = self.embedded_runner.start(&self.config)?;
+        if let Err(error) = self.health_probe.wait_until_ready(&self.config).await {
+            let _ = self.embedded_runner.stop(&handle);
+            return Err(error);
+        }
+
+        Ok(RunningObjectStorage {
+            config: self.config.clone(),
+            runtime: RunningObjectStorageRuntime::Embedded {
+                handle,
+                runner: Arc::clone(&self.embedded_runner),
+            },
+        })
+    }
+
+    async fn start_minio(&self) -> SandboxResult<RunningObjectStorage> {
         std::fs::create_dir_all(&self.config.data_dir).map_err(|error| {
             SandboxError::provider(format!(
                 "create object-storage data dir {}: {error}",
@@ -514,17 +592,31 @@ impl ObjectStorageService {
 
         Ok(RunningObjectStorage {
             config: self.config.clone(),
-            process: handle,
-            process_runner: Arc::clone(&self.process_runner),
+            runtime: RunningObjectStorageRuntime::Minio {
+                handle,
+                runner: Arc::clone(&self.process_runner),
+            },
         })
     }
 }
 
 /// Running object-storage service handle.
+#[derive(Clone)]
 pub struct RunningObjectStorage {
     config: ObjectStorageConfig,
-    process: MinioProcessHandle,
-    process_runner: Arc<dyn MinioProcessRunner>,
+    runtime: RunningObjectStorageRuntime,
+}
+
+#[derive(Clone)]
+enum RunningObjectStorageRuntime {
+    Embedded {
+        handle: EmbeddedObjectStorageHandle,
+        runner: Arc<dyn EmbeddedObjectStorageRunner>,
+    },
+    Minio {
+        handle: MinioProcessHandle,
+        runner: Arc<dyn MinioProcessRunner>,
+    },
 }
 
 impl RunningObjectStorage {
@@ -534,10 +626,34 @@ impl RunningObjectStorage {
         self.config.profile(&ready_health())
     }
 
-    /// Stop the `MinIO` process.
+    /// Stop the running object-storage backend.
     pub fn stop(&self) -> SandboxResult<()> {
-        self.process_runner.stop(&self.process)
+        match &self.runtime {
+            RunningObjectStorageRuntime::Embedded { handle, runner } => runner.stop(handle),
+            RunningObjectStorageRuntime::Minio { handle, runner } => runner.stop(handle),
+        }
     }
+}
+
+/// Fakeable embedded object-storage runner.
+pub trait EmbeddedObjectStorageRunner: Send + Sync {
+    /// Start embedded object storage and return a handle.
+    fn start(&self, config: &ObjectStorageConfig) -> SandboxResult<EmbeddedObjectStorageHandle>;
+
+    /// Stop embedded object storage.
+    fn stop(&self, handle: &EmbeddedObjectStorageHandle) -> SandboxResult<()>;
+}
+
+/// Handle returned by an embedded object-storage runner.
+#[derive(Clone)]
+pub struct EmbeddedObjectStorageHandle {
+    /// Runner-local handle identifier.
+    pub id: String,
+}
+
+struct EmbeddedObjectStorageServer {
+    shutdown: Option<oneshot::Sender<()>>,
+    task: JoinHandle<()>,
 }
 
 /// Fakeable `MinIO` binary resolver.
@@ -586,6 +702,120 @@ impl MinioBinaryResolver for PathMinioBinaryResolver {
             .clone()
             .or_else(|| resolve_path_binary("minio"))
             .ok_or_else(|| SandboxError::provider("minio binary not found on PATH"))
+    }
+}
+
+/// Run embedded S3-compatible object storage with `s3s-fs`.
+#[derive(Default)]
+pub struct TokioEmbeddedObjectStorageRunner {
+    servers: Mutex<BTreeMap<String, EmbeddedObjectStorageServer>>,
+}
+
+impl EmbeddedObjectStorageRunner for TokioEmbeddedObjectStorageRunner {
+    fn start(&self, config: &ObjectStorageConfig) -> SandboxResult<EmbeddedObjectStorageHandle> {
+        let filesystem = FileSystem::new(&config.data_dir).map_err(|error| {
+            SandboxError::provider(format!(
+                "start embedded object storage at {}: {error:?}",
+                config.data_dir.display()
+            ))
+        })?;
+        let service = {
+            let mut builder = S3ServiceBuilder::new(filesystem);
+            builder.set_auth(SimpleAuth::from_single(
+                config.access_key_id.clone(),
+                config.secret_access_key.clone(),
+            ));
+            builder.build()
+        };
+
+        let bind_host = config.api_host.parse::<IpAddr>().map_err(|error| {
+            SandboxError::invalid_request(format!(
+                "object-storage API host must be an IP address: {error}"
+            ))
+        })?;
+        let bind_addr = (bind_host, config.api_port);
+        let std_listener = std::net::TcpListener::bind(bind_addr).map_err(|error| {
+            SandboxError::provider(format!(
+                "bind embedded object storage {}:{}: {error}",
+                config.api_host, config.api_port
+            ))
+        })?;
+        std_listener.set_nonblocking(true).map_err(|error| {
+            SandboxError::provider(format!(
+                "configure embedded object storage listener: {error}"
+            ))
+        })?;
+        let listener = tokio::net::TcpListener::from_std(std_listener).map_err(|error| {
+            SandboxError::provider(format!("create embedded object storage listener: {error}"))
+        })?;
+
+        let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
+        let id = format!("embedded-s3-{}", config.api_port);
+        let task = tokio::spawn(async move {
+            let http_server = ConnBuilder::new(TokioExecutor::new());
+            let graceful = GracefulShutdown::new();
+            loop {
+                let (socket, _) = tokio::select! {
+                    result = listener.accept() => match result {
+                        Ok(connection) => connection,
+                        Err(error) => {
+                            tracing::warn!(error = %error, "embedded object storage accept failed");
+                            continue;
+                        }
+                    },
+                    _ = &mut shutdown_rx => break,
+                };
+
+                let connection =
+                    http_server.serve_connection(TokioIo::new(socket), service.clone());
+                let connection = graceful.watch(connection.into_owned());
+                tokio::spawn(async move {
+                    if let Err(error) = connection.await {
+                        tracing::warn!(error = %error, "embedded object storage connection failed");
+                    }
+                });
+            }
+
+            tokio::select! {
+                () = graceful.shutdown() => {}
+                () = sleep(Duration::from_secs(10)) => {
+                    tracing::warn!("timed out waiting for embedded object storage connections to drain");
+                }
+            }
+        });
+
+        self.servers
+            .lock()
+            .map_err(|_| SandboxError::provider("embedded object-storage registry lock poisoned"))?
+            .insert(
+                id.clone(),
+                EmbeddedObjectStorageServer {
+                    shutdown: Some(shutdown_tx),
+                    task,
+                },
+            );
+
+        Ok(EmbeddedObjectStorageHandle { id })
+    }
+
+    fn stop(&self, handle: &EmbeddedObjectStorageHandle) -> SandboxResult<()> {
+        let mut server = self
+            .servers
+            .lock()
+            .map_err(|_| SandboxError::provider("embedded object-storage registry lock poisoned"))?
+            .remove(&handle.id)
+            .ok_or_else(|| SandboxError::provider("embedded object-storage handle is unknown"))?;
+        if let Some(shutdown) = server.shutdown.take() {
+            let _ = shutdown.send(());
+        }
+        tokio::spawn(async move {
+            if let Err(error) = server.task.await {
+                if !error.is_cancelled() {
+                    tracing::warn!(error = %error, "embedded object storage task failed during shutdown");
+                }
+            }
+        });
+        Ok(())
     }
 }
 
@@ -792,6 +1022,7 @@ mod tests {
     #[test]
     fn object_storage_config_reads_product_neutral_environment() {
         let env = BTreeMap::from([
+            (ENV_OBJECT_STORAGE_BACKEND, "minio"),
             (ENV_MINIO_BINARY, "/opt/minio"),
             (ENV_OBJECT_STORAGE_DATA_DIR, "/var/local-sandbox/minio-data"),
             (ENV_OBJECT_STORAGE_API_HOST, "0.0.0.0"),
@@ -813,6 +1044,7 @@ mod tests {
         })
         .unwrap();
 
+        assert_eq!(config.backend, ObjectStorageBackendKind::Minio);
         assert_eq!(config.minio_binary, Some(PathBuf::from("/opt/minio")));
         assert_eq!(
             config.data_dir,
@@ -831,6 +1063,14 @@ mod tests {
             config.log_path,
             Some(PathBuf::from("/var/log/local-sandbox/minio.log"))
         );
+    }
+
+    #[test]
+    fn object_storage_config_defaults_to_embedded_backend() {
+        let config = ObjectStorageConfig::from_env_reader(|_| None).unwrap();
+
+        assert_eq!(config.backend, ObjectStorageBackendKind::Embedded);
+        assert_eq!(config.minio_binary, None);
     }
 
     #[test]
@@ -906,6 +1146,7 @@ mod tests {
     async fn object_storage_start_uses_fakeable_seams_and_returns_ready_profile() {
         let config = ObjectStorageConfig {
             data_dir: env::temp_dir().join(format!("local-sandbox-test-{}", std::process::id())),
+            backend: ObjectStorageBackendKind::Minio,
             minio_binary: Some(PathBuf::from("/fake/minio")),
             readiness_timeout: Duration::from_millis(1),
             ..ObjectStorageConfig::default()
@@ -913,8 +1154,13 @@ mod tests {
         let resolver = Arc::new(FakeResolver);
         let runner = Arc::new(FakeRunner::default());
         let probe = Arc::new(FakeProbe);
-        let service =
-            ObjectStorageService::with_components(config.clone(), resolver, runner.clone(), probe);
+        let service = ObjectStorageService::with_components(
+            config.clone(),
+            Arc::new(FakeEmbeddedRunner::default()),
+            resolver,
+            runner.clone(),
+            probe,
+        );
 
         let running = service.start().await.unwrap();
 
@@ -932,10 +1178,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn object_storage_start_uses_embedded_backend_by_default() {
+        let config = ObjectStorageConfig {
+            data_dir: env::temp_dir().join(format!(
+                "local-sandbox-embedded-default-test-{}",
+                std::process::id()
+            )),
+            api_port: 19_100,
+            ..ObjectStorageConfig::default()
+        };
+        let embedded = Arc::new(FakeEmbeddedRunner::default());
+        let runner = Arc::new(FakeRunner::default());
+        let service = ObjectStorageService::with_components(
+            config.clone(),
+            embedded.clone(),
+            Arc::new(FakeResolver),
+            runner.clone(),
+            Arc::new(FakeProbe),
+        );
+
+        let running = service.start().await.unwrap();
+
+        assert_eq!(
+            embedded.started.lock().unwrap().as_slice(),
+            &[config.data_dir.clone()]
+        );
+        assert!(runner.started.lock().unwrap().is_empty());
+        assert_eq!(running.profile().health.status, LocalHealthStatus::Ready);
+        running.stop().unwrap();
+        assert_eq!(
+            embedded.stopped.lock().unwrap().as_slice(),
+            &["fake-embedded-s3".to_string()]
+        );
+        let _ = std::fs::remove_dir_all(config.data_dir);
+    }
+
+    #[tokio::test]
     async fn object_storage_start_stops_process_when_health_fails() {
         let config = ObjectStorageConfig {
             data_dir: env::temp_dir()
                 .join(format!("local-sandbox-test-fail-{}", std::process::id())),
+            backend: ObjectStorageBackendKind::Minio,
             minio_binary: Some(PathBuf::from("/fake/minio")),
             readiness_timeout: Duration::from_millis(1),
             ..ObjectStorageConfig::default()
@@ -943,6 +1226,7 @@ mod tests {
         let runner = Arc::new(FakeRunner::default());
         let service = ObjectStorageService::with_components(
             config.clone(),
+            Arc::new(FakeEmbeddedRunner::default()),
             Arc::new(FakeResolver),
             runner.clone(),
             Arc::new(FailingProbe),
@@ -965,6 +1249,7 @@ mod tests {
         let config = ObjectStorageConfig {
             data_dir: env::temp_dir()
                 .join(format!("local-sandbox-manager-test-{}", std::process::id())),
+            backend: ObjectStorageBackendKind::Minio,
             minio_binary: Some(PathBuf::from("/fake/minio")),
             readiness_timeout: Duration::from_millis(1),
             ..ObjectStorageConfig::default()
@@ -972,6 +1257,7 @@ mod tests {
         let runner = Arc::new(FakeRunner::default());
         let service = ObjectStorageService::with_components(
             config.clone(),
+            Arc::new(FakeEmbeddedRunner::default()),
             Arc::new(FakeResolver),
             runner.clone(),
             Arc::new(FakeProbe),
@@ -998,12 +1284,14 @@ mod tests {
                 "local-sandbox-manager-fail-test-{}",
                 std::process::id()
             )),
+            backend: ObjectStorageBackendKind::Minio,
             minio_binary: Some(PathBuf::from("/fake/minio")),
             readiness_timeout: Duration::from_millis(1),
             ..ObjectStorageConfig::default()
         };
         let service = ObjectStorageService::with_components(
             config.clone(),
+            Arc::new(FakeEmbeddedRunner::default()),
             Arc::new(FakeResolver),
             Arc::new(FakeRunner::default()),
             Arc::new(FailingProbe),
@@ -1026,12 +1314,14 @@ mod tests {
                 "local-sandbox-manager-slow-test-{}",
                 std::process::id()
             )),
+            backend: ObjectStorageBackendKind::Minio,
             minio_binary: Some(PathBuf::from("/fake/minio")),
             readiness_timeout: Duration::from_millis(1),
             ..ObjectStorageConfig::default()
         };
         let service = ObjectStorageService::with_components(
             config.clone(),
+            Arc::new(FakeEmbeddedRunner::default()),
             Arc::new(FakeResolver),
             Arc::new(FakeRunner::default()),
             Arc::new(SlowProbe),
@@ -1064,7 +1354,7 @@ mod tests {
         assert_eq!(profile.health.status, LocalHealthStatus::Failed);
         assert_eq!(
             profile.health.message.as_deref(),
-            Some("object-storage running state is missing process handle")
+            Some("object-storage running state is missing runtime handle")
         );
     }
 
@@ -1098,6 +1388,29 @@ mod tests {
     impl ObjectStorageManager {
         fn set_phase_for_test(&self, phase: ObjectStorageManagerPhase) {
             self.inner.state.lock().unwrap().phase = phase;
+        }
+    }
+
+    #[derive(Default)]
+    struct FakeEmbeddedRunner {
+        started: Mutex<Vec<PathBuf>>,
+        stopped: Mutex<Vec<String>>,
+    }
+
+    impl EmbeddedObjectStorageRunner for FakeEmbeddedRunner {
+        fn start(
+            &self,
+            config: &ObjectStorageConfig,
+        ) -> SandboxResult<EmbeddedObjectStorageHandle> {
+            self.started.lock().unwrap().push(config.data_dir.clone());
+            Ok(EmbeddedObjectStorageHandle {
+                id: "fake-embedded-s3".to_string(),
+            })
+        }
+
+        fn stop(&self, handle: &EmbeddedObjectStorageHandle) -> SandboxResult<()> {
+            self.stopped.lock().unwrap().push(handle.id.clone());
+            Ok(())
         }
     }
 

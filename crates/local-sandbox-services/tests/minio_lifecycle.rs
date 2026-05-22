@@ -1,7 +1,9 @@
 //! Ignored host contract tests for a real `MinIO` binary.
 
 use local_sandbox_core::LocalHealthStatus;
-use local_sandbox_services::{ObjectStorageConfig, ObjectStorageManager, ENV_MINIO_BINARY};
+use local_sandbox_services::{
+    ObjectStorageBackendKind, ObjectStorageConfig, ObjectStorageManager, ENV_MINIO_BINARY,
+};
 use std::{path::PathBuf, time::Duration};
 
 #[tokio::test]
@@ -13,6 +15,7 @@ async fn starts_real_minio_and_serves_host_profile() {
     ));
     let log_path = temp_root.join("minio.log");
     let config = ObjectStorageConfig {
+        backend: ObjectStorageBackendKind::Minio,
         data_dir: temp_root.join("data"),
         minio_binary: std::env::var_os(ENV_MINIO_BINARY).map(PathBuf::from),
         api_port: 19_000,

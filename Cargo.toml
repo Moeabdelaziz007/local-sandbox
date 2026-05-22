@@ -44,7 +44,10 @@ axum = "0.8.4"
 base64 = "0.22.1"
 clap = { version = "4.5.38", features = ["derive", "env"] }
 crc-fast = "=1.9.0"
+hyper-util = "0.1.20"
 ratatui = "0.29.0"
+s3s = "=0.13.0-alpha.3"
+s3s-fs = "=0.13.0-alpha.3"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
 thiserror = "2.0.12"

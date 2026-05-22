@@ -192,7 +192,7 @@ Review:
 
 ### PER 3C — S3 service compatibility
 
-Status: in progress — 3C.4 embedded object-storage backend planned
+Status: in progress — 3C.4 embedded object-storage backend implemented
 
 Prepare:
 
@@ -209,22 +209,22 @@ Execute:
 - 3C.2 adds product-neutral object-storage env config for binary, data dir, API host/port, console port, region, credentials, guest host, and log path.
 - 3C.2 keeps default tests on fakeable seams and adds an ignored real-MinIO host lifecycle contract test.
 - 3C.3 adds an ignored/env-gated real-MinIO daemon integration test that reads `GET /profile`, builds an AWS SDK S3 client from the daemon-owned object-storage endpoint, credentials, region, and path-style profile facts, then validates create bucket, put/get exact bytes, head, list, copy, delete object(s), presigned GET, and presigned PUT.
-- 3C.4 should replace MinIO as the default object-storage runtime with an embedded Rust S3-compatible backend, likely `s3s` plus `s3s-fs`, so normal local development and CI do not require a `MinIO` binary.
-- 3C.4 should keep the AWS SDK profile-derived contract as the compatibility truth: daemon starts object storage, `GET /profile` returns endpoint/credential/region/path-style facts, and a profile-derived SDK client validates the advertised host operation subset.
-- 3C.4 should demote MinIO to an optional parity/reference backend unless a concrete compatibility gap requires it as the default.
+- 3C.4 replaces MinIO as the default object-storage runtime with an embedded Rust S3-compatible backend using `s3s` plus `s3s-fs`, so normal local development and CI do not require a `MinIO` binary.
+- 3C.4 keeps the AWS SDK profile-derived contract as the compatibility truth: daemon starts object storage, `GET /profile` returns endpoint/credential/region/path-style facts, and a profile-derived SDK client validates the advertised host operation subset.
+- 3C.4 demotes MinIO to an optional parity/reference backend selected with `LOCAL_SANDBOX_OBJECT_STORAGE_BACKEND=minio` or `LOCAL_SANDBOX_MINIO_BINARY`.
 - Browser/CORS support, versioning support, guest presigned probing, v0-specific buckets/keys, and Postgres/KV remain out of scope for 3C.4.
 
 Review:
 
 - v0 should be able to delete MinIO lifecycle and local S3 env wiring while keeping product bucket/key semantics.
 - If daemon boot cannot start object storage, the daemon still serves a failed object-storage health profile rather than failing the whole daemon.
-- Host-side S3 compatibility now has ignored real-MinIO contract coverage through daemon profile facts; the contract still needs to be run in an environment with a `MinIO` binary before using it as proof for v0 deletion work.
+- Host-side S3 compatibility now has normal embedded contract coverage through daemon profile facts; the ignored real-MinIO contract remains available for parity checks in environments with a `MinIO` binary.
 - Guest-visible and browser-visible object-storage flows still need dedicated route/URL compatibility work.
 - The success bar is now higher than MinIO lifecycle ownership: a fresh checkout should be able to run the daemon and get working local object storage without installing an external S3 service.
 
 ### PER 3C.4 — embedded object-storage backend
 
-Status: planned
+Status: implemented
 
 Prepare:
 
@@ -235,11 +235,11 @@ Prepare:
 
 Execute:
 
-- Introduce an object-storage backend trait or equivalent seam below `ObjectStorageManager`.
-- Implement the default embedded backend as a daemon-owned Tokio task rather than an external process.
-- Rename MinIO-specific config/process/health concepts where they are no longer the product boundary.
-- Convert the S3 host contract to run in normal CI against the embedded backend.
-- Keep the MinIO contract ignored/env-gated if it remains useful for parity.
+- Introduced an object-storage backend selection seam below `ObjectStorageManager` while keeping profile facts product-neutral.
+- Implemented the default embedded backend as a daemon-owned Tokio task backed by `s3s`/`s3s-fs`.
+- Added `LOCAL_SANDBOX_OBJECT_STORAGE_BACKEND=embedded|minio`; `LOCAL_SANDBOX_MINIO_BINARY` still selects the MinIO parity backend.
+- Converted the S3 host contract to run in normal CI against the embedded backend.
+- Kept the MinIO contract ignored/env-gated as an optional parity/reference check.
 
 Review:
 
@@ -247,6 +247,7 @@ Review:
 - The profile-derived AWS SDK contract passes in normal CI for the advertised host S3 subset.
 - The capability matrix stays honest about unsupported CORS, browser upload, versioning, guest presigned, and public object-storage flows.
 - v0 deletion work should target local object-storage lifecycle/env wiring, not MinIO-specific code paths.
+- MinIO can likely be removed once embedded object storage is accepted as the only compatibility target, but keeping it through this PER preserves a reference backend while the embedded backend is still new.
 
 ### PER 3D — embedded Postgres / KV decision
 

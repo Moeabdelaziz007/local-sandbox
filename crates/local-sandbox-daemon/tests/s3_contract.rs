@@ -1,4 +1,4 @@
-//! Ignored real-MinIO daemon S3 compatibility contract.
+//! Daemon S3 compatibility contracts.
 
 use aws_credential_types::Credentials;
 use aws_sdk_s3::{
@@ -17,7 +17,7 @@ use local_sandbox_core::{
     LocalObjectStorageCapabilities, LocalProfile, LocalServiceProfile,
 };
 use local_sandbox_daemon::{boot_state_with_object_storage_config, router_with_state, DaemonState};
-use local_sandbox_services::{ObjectStorageConfig, ENV_MINIO_BINARY};
+use local_sandbox_services::{ObjectStorageBackendKind, ObjectStorageConfig, ENV_MINIO_BINARY};
 use std::{
     env,
     error::Error,
@@ -32,15 +32,25 @@ const RUN_REAL_MINIO_TESTS_ENV: &str = "LOCAL_SANDBOX_RUN_MINIO_S3_CONTRACT";
 const RESPONSE_BODY_LIMIT: usize = 1024 * 1024;
 
 #[tokio::test]
+async fn daemon_profile_drives_embedded_s3_host_contract() -> Result<(), Box<dyn Error>> {
+    prove_daemon_profile_drives_s3_host_contract(ObjectStorageBackendKind::Embedded).await
+}
+
+#[tokio::test]
 #[ignore = "requires LOCAL_SANDBOX_RUN_MINIO_S3_CONTRACT=1 and a real minio binary"]
 async fn daemon_profile_drives_real_minio_s3_host_contract() -> Result<(), Box<dyn Error>> {
-    if !real_minio_tests_enabled() {
+    prove_daemon_profile_drives_s3_host_contract(ObjectStorageBackendKind::Minio).await
+}
+
+async fn prove_daemon_profile_drives_s3_host_contract(
+    backend: ObjectStorageBackendKind,
+) -> Result<(), Box<dyn Error>> {
+    if backend == ObjectStorageBackendKind::Minio && !real_minio_tests_enabled() {
         eprintln!("skipping real MinIO S3 contract; set {RUN_REAL_MINIO_TESTS_ENV}=1 to run");
         return Ok(());
     }
-
     let temp_root = unique_temp_root();
-    let state = boot_state_for_contract(temp_root.as_path()).await?;
+    let state = boot_state_for_contract(temp_root.as_path(), backend).await?;
     let _cleanup = DaemonCleanup::new(state.clone(), temp_root);
     let profile = fetch_profile(state).await?;
     let service = object_storage_service(&profile)?;
@@ -54,10 +64,13 @@ async fn daemon_profile_drives_real_minio_s3_host_contract() -> Result<(), Box<d
     Ok(())
 }
 
-async fn boot_state_for_contract(temp_root: &Path) -> Result<DaemonState, Box<dyn Error>> {
+async fn boot_state_for_contract(
+    temp_root: &Path,
+    backend: ObjectStorageBackendKind,
+) -> Result<DaemonState, Box<dyn Error>> {
     let mut last_error = None;
     for _ in 0..10 {
-        let config = contract_config(temp_root)?;
+        let config = contract_config(temp_root, backend)?;
         match boot_state_with_object_storage_config(config).await {
             Ok(state)
                 if state.object_storage_manager().profile().health.status
@@ -91,9 +104,13 @@ async fn boot_state_for_contract(temp_root: &Path) -> Result<DaemonState, Box<dy
     .into())
 }
 
-fn contract_config(temp_root: &Path) -> Result<ObjectStorageConfig, io::Error> {
+fn contract_config(
+    temp_root: &Path,
+    backend: ObjectStorageBackendKind,
+) -> Result<ObjectStorageConfig, io::Error> {
     let (api_port, console_port) = free_ports()?;
     Ok(ObjectStorageConfig {
+        backend,
         data_dir: temp_root.join("data"),
         minio_binary: env::var_os(ENV_MINIO_BINARY).map(PathBuf::from),
         api_host: "127.0.0.1".to_string(),
@@ -105,7 +122,7 @@ fn contract_config(temp_root: &Path) -> Result<ObjectStorageConfig, io::Error> {
         region: "us-east-1".to_string(),
         access_key_id: "local-sandbox-contract".to_string(),
         secret_access_key: "local-sandbox-contract-secret".to_string(),
-        log_path: Some(temp_root.join("minio.log")),
+        log_path: Some(temp_root.join("object-storage.log")),
         readiness_timeout: Duration::from_secs(30),
     })
 }

@@ -10,6 +10,15 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+hyper-util = { workspace = true, features = [
+  "http1",
+  "server-auto",
+  "server-graceful",
+  "tokio",
+] }
 local-sandbox-core = { path = "../local-sandbox-core" }
+s3s.workspace = true
+s3s-fs.workspace = true
 serde.workspace = true
 tokio = { workspace = true, features = ["net", "process", "time"] }
+tracing.workspace = true
