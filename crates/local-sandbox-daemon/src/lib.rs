@@ -9,11 +9,14 @@ use axum::{
 };
 use local_sandbox_core::{
     CommandId, CommandWait, CreateCommandRequest, CreateSandboxRequest, CreateSnapshotRequest,
-    ExtendSandboxTimeoutRequest, InMemorySandboxProvider, SandboxError, SandboxErrorCode,
-    SandboxId, SandboxProvider, SetNetworkPolicyRequest, WriteFilesRequest,
+    ExtendSandboxTimeoutRequest, InMemorySandboxProvider, LocalCredentials, LocalDaemonProfile,
+    LocalEndpoint, LocalEndpointProtocol, LocalEndpointPurpose, LocalEndpointVisibility,
+    LocalHealth, LocalHealthStatus, LocalProfile, LocalSandboxProfile, LocalServiceProfile,
+    SandboxError, SandboxErrorCode, SandboxId, SandboxProvider, SetNetworkPolicyRequest,
+    WriteFilesRequest,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 /// Shared daemon application state.
 #[derive(Clone)]
@@ -29,6 +32,11 @@ impl DaemonState {
             provider: Arc::new(provider),
         }
     }
+
+    async fn profile(&self) -> Result<LocalProfile, SandboxError> {
+        let capabilities = self.provider.capabilities().await?;
+        Ok(default_profile(capabilities.provider))
+    }
 }
 
 /// Build the daemon router using the default in-memory provider.
@@ -40,6 +48,7 @@ pub fn router() -> Router {
 pub fn router_with_state(state: DaemonState) -> Router {
     Router::new()
         .route("/health", get(health))
+        .route("/profile", get(profile))
         .route("/capabilities", get(capabilities))
         .route("/sandboxes", post(create_sandbox))
         .route(
@@ -81,6 +90,10 @@ struct ErrorResponse {
 
 async fn health() -> Json<HealthResponse> {
     Json(HealthResponse { ok: true })
+}
+
+async fn profile(State(state): State<DaemonState>) -> Result<impl IntoResponse, DaemonError> {
+    Ok(Json(state.profile().await?))
 }
 
 async fn capabilities(State(state): State<DaemonState>) -> Result<impl IntoResponse, DaemonError> {
@@ -235,6 +248,143 @@ fn error_message(error: &SandboxError) -> String {
     }
 }
 
+fn default_profile(provider: String) -> LocalProfile {
+    LocalProfile {
+        daemon: LocalDaemonProfile {
+            health: ready_health(),
+            endpoints: vec![LocalEndpoint {
+                name: "daemon_api".to_string(),
+                visibility: LocalEndpointVisibility::Host,
+                purpose: LocalEndpointPurpose::DaemonApi,
+                protocol: LocalEndpointProtocol::Http,
+                url: None,
+                health: ready_health(),
+            }],
+        },
+        sandbox: LocalSandboxProfile {
+            provider,
+            health: unknown_health(),
+            endpoints: Vec::new(),
+        },
+        routes: Vec::new(),
+        services: BTreeMap::from([
+            (
+                "object_storage".to_string(),
+                LocalServiceProfile {
+                    health: unwired_health(),
+                    endpoints: vec![
+                        fake_endpoint(
+                            "host_api",
+                            LocalEndpointVisibility::Host,
+                            LocalEndpointPurpose::ObjectStorageApi,
+                            LocalEndpointProtocol::Http,
+                        ),
+                        fake_endpoint(
+                            "guest_api",
+                            LocalEndpointVisibility::Guest,
+                            LocalEndpointPurpose::ObjectStorageApi,
+                            LocalEndpointProtocol::Http,
+                        ),
+                        fake_endpoint(
+                            "public_objects",
+                            LocalEndpointVisibility::Public,
+                            LocalEndpointPurpose::PublicObjectStorage,
+                            LocalEndpointProtocol::Http,
+                        ),
+                    ],
+                    credentials: Some(LocalCredentials {
+                        access_key_id: None,
+                        secret_access_key: None,
+                        username: None,
+                        password: None,
+                        token: None,
+                    }),
+                },
+            ),
+            (
+                "database".to_string(),
+                LocalServiceProfile {
+                    health: unwired_health(),
+                    endpoints: vec![
+                        fake_endpoint(
+                            "host_postgres",
+                            LocalEndpointVisibility::Host,
+                            LocalEndpointPurpose::Database,
+                            LocalEndpointProtocol::Postgres,
+                        ),
+                        fake_endpoint(
+                            "guest_postgres",
+                            LocalEndpointVisibility::Guest,
+                            LocalEndpointPurpose::Database,
+                            LocalEndpointProtocol::Postgres,
+                        ),
+                    ],
+                    credentials: Some(LocalCredentials {
+                        access_key_id: None,
+                        secret_access_key: None,
+                        username: None,
+                        password: None,
+                        token: None,
+                    }),
+                },
+            ),
+            (
+                "callbacks".to_string(),
+                LocalServiceProfile {
+                    health: unwired_health(),
+                    endpoints: vec![fake_endpoint(
+                        "host_callback",
+                        LocalEndpointVisibility::Host,
+                        LocalEndpointPurpose::Callback,
+                        LocalEndpointProtocol::Http,
+                    )],
+                    credentials: None,
+                },
+            ),
+        ]),
+    }
+}
+
+fn fake_endpoint(
+    name: &str,
+    visibility: LocalEndpointVisibility,
+    purpose: LocalEndpointPurpose,
+    protocol: LocalEndpointProtocol,
+) -> LocalEndpoint {
+    LocalEndpoint {
+        name: name.to_string(),
+        visibility,
+        purpose,
+        protocol,
+        url: None,
+        health: unknown_health(),
+    }
+}
+
+fn ready_health() -> LocalHealth {
+    LocalHealth {
+        status: LocalHealthStatus::Ready,
+        message: None,
+        checked_at_unix_ms: None,
+    }
+}
+
+fn unknown_health() -> LocalHealth {
+    LocalHealth {
+        status: LocalHealthStatus::Unknown,
+        message: None,
+        checked_at_unix_ms: None,
+    }
+}
+
+fn unwired_health() -> LocalHealth {
+    LocalHealth {
+        status: LocalHealthStatus::Unknown,
+        message: Some("not wired yet".to_string()),
+        checked_at_unix_ms: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,6 +418,42 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let capabilities = json_body::<SandboxCapabilities>(response).await;
         assert_eq!(capabilities.provider, "in_memory");
+    }
+
+    #[tokio::test]
+    async fn profile_route_returns_product_neutral_endpoint_taxonomy() {
+        let app = test_router();
+
+        let response = app.oneshot(request("GET", "/profile", None)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let profile = json_body::<LocalProfile>(response).await;
+
+        assert_eq!(profile.daemon.health.status, LocalHealthStatus::Ready);
+        assert_eq!(profile.sandbox.provider, "in_memory");
+        assert_eq!(profile.sandbox.health.status, LocalHealthStatus::Unknown);
+        assert!(profile.routes.is_empty());
+
+        let object_storage = profile.services.get("object_storage").unwrap();
+        assert_eq!(object_storage.health.status, LocalHealthStatus::Unknown);
+        assert_eq!(object_storage.endpoints.len(), 3);
+        assert!(object_storage.endpoints.iter().any(|endpoint| {
+            endpoint.visibility == LocalEndpointVisibility::Guest
+                && endpoint.purpose == LocalEndpointPurpose::ObjectStorageApi
+                && endpoint.protocol == LocalEndpointProtocol::Http
+                && endpoint.url.is_none()
+        }));
+        assert!(object_storage.endpoints.iter().any(|endpoint| {
+            endpoint.visibility == LocalEndpointVisibility::Public
+                && endpoint.purpose == LocalEndpointPurpose::PublicObjectStorage
+        }));
+        assert!(object_storage.credentials.is_some());
+
+        let database = profile.services.get("database").unwrap();
+        assert!(database.endpoints.iter().any(|endpoint| {
+            endpoint.visibility == LocalEndpointVisibility::Host
+                && endpoint.purpose == LocalEndpointPurpose::Database
+                && endpoint.protocol == LocalEndpointProtocol::Postgres
+        }));
     }
 
     #[tokio::test]

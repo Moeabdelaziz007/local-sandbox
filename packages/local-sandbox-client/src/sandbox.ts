@@ -78,6 +78,87 @@ export interface LocalSandboxClientOptions {
   fetch?: typeof fetch;
 }
 
+export interface LocalProfile {
+  daemon: LocalDaemonProfile;
+  sandbox: LocalSandboxProfile;
+  routes: LocalRouteProfile[];
+  services: Record<string, LocalServiceProfile>;
+}
+
+export interface LocalDaemonProfile {
+  health: LocalHealth;
+  endpoints: LocalEndpoint[];
+}
+
+export interface LocalSandboxProfile {
+  provider: string;
+  health: LocalHealth;
+  endpoints: LocalEndpoint[];
+}
+
+export interface LocalRouteProfile {
+  name: string;
+  target_port?: number | null;
+  health: LocalHealth;
+  endpoints: LocalEndpoint[];
+}
+
+export interface LocalServiceProfile {
+  health: LocalHealth;
+  endpoints: LocalEndpoint[];
+  credentials?: LocalCredentials | null;
+}
+
+export type LocalEndpointVisibility = "host" | "guest" | "browser" | "public";
+
+export type LocalEndpointPurpose =
+  | "daemon_api"
+  | "sandbox_route"
+  | "websocket"
+  | "callback"
+  | "object_storage_api"
+  | "public_object_storage"
+  | "database";
+
+export type LocalEndpointProtocol =
+  | "http"
+  | "https"
+  | "ws"
+  | "wss"
+  | "tcp"
+  | "postgres";
+
+export interface LocalEndpoint {
+  name: string;
+  visibility: LocalEndpointVisibility;
+  purpose: LocalEndpointPurpose;
+  protocol: LocalEndpointProtocol;
+  url?: string | null;
+  health: LocalHealth;
+}
+
+export interface LocalHealth {
+  status: LocalHealthStatus;
+  message?: string | null;
+  checked_at_unix_ms?: number | null;
+}
+
+export type LocalHealthStatus =
+  | "unknown"
+  | "starting"
+  | "ready"
+  | "degraded"
+  | "stopped"
+  | "failed";
+
+export interface LocalCredentials {
+  access_key_id?: string | null;
+  secret_access_key?: string | null;
+  username?: string | null;
+  password?: string | null;
+  token?: string | null;
+}
+
 interface DaemonSandboxInfo {
   id: string;
   status:
@@ -236,6 +317,14 @@ export class LocalSandboxClient {
       requestOptions({ signal: params.signal }),
     );
     return new Sandbox(this, sandbox);
+  }
+
+  async getProfile(params: { signal?: AbortSignal } = {}): Promise<LocalProfile> {
+    throwIfAborted(params.signal);
+    return this.request<LocalProfile>(
+      "/profile",
+      requestOptions({ signal: params.signal }),
+    );
   }
 
   async request<T>(path: string, init: DaemonRequestInit = {}): Promise<T> {

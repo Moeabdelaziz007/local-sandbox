@@ -170,7 +170,7 @@ Review:
 
 ### PER 3B — local profile contract
 
-Status: planned
+Status: implemented
 
 Prepare:
 
@@ -179,8 +179,10 @@ Prepare:
 
 Execute:
 
-- Add profile contract types and daemon/client routes.
-- Add contract tests for profile serialization and endpoint taxonomy.
+- Added product-neutral profile contract types for daemon, sandbox, route, service, endpoint, health, and credentials.
+- Added daemon `GET /profile` that returns fake/unknown service endpoints and health until S3/Postgres lifecycle lands.
+- Added `LocalSandboxClient.getProfile()` plus exported TypeScript profile types.
+- Added Rust serialization and daemon route tests plus a mocked TypeScript client profile test.
 
 Review:
 

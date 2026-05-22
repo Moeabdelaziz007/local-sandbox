@@ -125,6 +125,182 @@ pub struct SandboxCapabilities {
     pub features: Vec<SandboxFeature>,
 }
 
+/// Product-neutral profile for local daemon, sandbox, route, and service facts.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct LocalProfile {
+    /// Local daemon connection and health facts.
+    pub daemon: LocalDaemonProfile,
+    /// Sandbox provider facts.
+    pub sandbox: LocalSandboxProfile,
+    /// Route endpoint facts known outside a specific sandbox response.
+    #[serde(default)]
+    pub routes: Vec<LocalRouteProfile>,
+    /// Local service profiles keyed by product-neutral service name.
+    #[serde(default)]
+    pub services: BTreeMap<String, LocalServiceProfile>,
+}
+
+/// Local daemon profile facts.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct LocalDaemonProfile {
+    /// Daemon health.
+    pub health: LocalHealth,
+    /// Endpoints that reach the daemon API.
+    #[serde(default)]
+    pub endpoints: Vec<LocalEndpoint>,
+}
+
+/// Local sandbox provider profile facts.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct LocalSandboxProfile {
+    /// Product-neutral provider name.
+    pub provider: String,
+    /// Provider health.
+    pub health: LocalHealth,
+    /// Provider-level endpoints, if any.
+    #[serde(default)]
+    pub endpoints: Vec<LocalEndpoint>,
+}
+
+/// Local route profile facts.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct LocalRouteProfile {
+    /// Stable route label.
+    pub name: String,
+    /// Target port inside a sandbox, if the route is sandbox-scoped.
+    pub target_port: Option<u16>,
+    /// Route health.
+    pub health: LocalHealth,
+    /// Endpoints that can reach this route.
+    #[serde(default)]
+    pub endpoints: Vec<LocalEndpoint>,
+}
+
+/// Local service profile facts.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct LocalServiceProfile {
+    /// Service health.
+    pub health: LocalHealth,
+    /// Service endpoints grouped by visibility, purpose, and protocol.
+    #[serde(default)]
+    pub endpoints: Vec<LocalEndpoint>,
+    /// Credentials used by local clients, if the service has credentials.
+    pub credentials: Option<LocalCredentials>,
+}
+
+/// Local endpoint visibility class.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalEndpointVisibility {
+    /// Endpoint reachable from the host process namespace.
+    Host,
+    /// Endpoint reachable from sandbox guest runtimes.
+    Guest,
+    /// Endpoint suitable for loading in the host browser.
+    Browser,
+    /// Endpoint intended for callers outside the local host boundary.
+    Public,
+}
+
+/// Local endpoint purpose.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalEndpointPurpose {
+    /// Daemon HTTP API endpoint.
+    DaemonApi,
+    /// Sandbox application route endpoint.
+    SandboxRoute,
+    /// WebSocket endpoint.
+    Websocket,
+    /// Lifecycle or service callback endpoint.
+    Callback,
+    /// S3-compatible object-storage API endpoint.
+    ObjectStorageApi,
+    /// Public object-storage endpoint.
+    PublicObjectStorage,
+    /// Database connection endpoint.
+    Database,
+}
+
+/// Local endpoint transport protocol.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalEndpointProtocol {
+    /// HTTP protocol.
+    Http,
+    /// HTTPS protocol.
+    Https,
+    /// WebSocket protocol.
+    Ws,
+    /// WebSocket over TLS protocol.
+    Wss,
+    /// Raw TCP protocol.
+    Tcp,
+    /// Postgres protocol.
+    Postgres,
+}
+
+/// Local endpoint facts.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct LocalEndpoint {
+    /// Stable endpoint label within its profile section.
+    pub name: String,
+    /// Visibility class for this endpoint.
+    pub visibility: LocalEndpointVisibility,
+    /// Purpose served by this endpoint.
+    pub purpose: LocalEndpointPurpose,
+    /// Transport protocol for this endpoint.
+    pub protocol: LocalEndpointProtocol,
+    /// URL or connection string, if known.
+    pub url: Option<String>,
+    /// Endpoint health.
+    pub health: LocalHealth,
+}
+
+/// Local health state.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct LocalHealth {
+    /// Current health status.
+    pub status: LocalHealthStatus,
+    /// Human-readable health detail, if any.
+    pub message: Option<String>,
+    /// Timestamp when this health was checked, if tracked.
+    pub checked_at_unix_ms: Option<u64>,
+}
+
+/// Local health status.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalHealthStatus {
+    /// Health has not been checked or is not known.
+    Unknown,
+    /// Component is starting.
+    Starting,
+    /// Component is ready.
+    Ready,
+    /// Component is partially available.
+    Degraded,
+    /// Component is stopped.
+    Stopped,
+    /// Component failed.
+    Failed,
+}
+
+/// Local credentials for a service profile.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct LocalCredentials {
+    /// Access key identifier for object-storage compatible services.
+    pub access_key_id: Option<String>,
+    /// Secret access key for object-storage compatible services.
+    pub secret_access_key: Option<String>,
+    /// Username for database or service clients.
+    pub username: Option<String>,
+    /// Password for database or service clients.
+    pub password: Option<String>,
+    /// Token for bearer-token style service clients.
+    pub token: Option<String>,
+}
+
 /// Network protocol exposed by a route.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -483,6 +659,112 @@ mod tests {
                 "labels": {}
             })
         );
+    }
+
+    #[test]
+    fn serializes_local_profile_endpoint_taxonomy() {
+        let endpoint = LocalEndpoint {
+            name: "public_objects".to_string(),
+            visibility: LocalEndpointVisibility::Public,
+            purpose: LocalEndpointPurpose::PublicObjectStorage,
+            protocol: LocalEndpointProtocol::Https,
+            url: Some("https://objects.local.test".to_string()),
+            health: LocalHealth {
+                status: LocalHealthStatus::Starting,
+                message: None,
+                checked_at_unix_ms: Some(123),
+            },
+        };
+
+        assert_eq!(
+            serde_json::to_value(&endpoint).unwrap(),
+            json!({
+                "name": "public_objects",
+                "visibility": "public",
+                "purpose": "public_object_storage",
+                "protocol": "https",
+                "url": "https://objects.local.test",
+                "health": {
+                    "status": "starting",
+                    "message": null,
+                    "checked_at_unix_ms": 123
+                }
+            })
+        );
+
+        let profile = LocalProfile {
+            daemon: profile_daemon(),
+            sandbox: LocalSandboxProfile {
+                provider: "vfkit".to_string(),
+                health: unknown_health(),
+                endpoints: Vec::new(),
+            },
+            routes: vec![LocalRouteProfile {
+                name: "preview".to_string(),
+                target_port: Some(3000),
+                health: unknown_health(),
+                endpoints: vec![LocalEndpoint {
+                    visibility: LocalEndpointVisibility::Browser,
+                    purpose: LocalEndpointPurpose::SandboxRoute,
+                    ..endpoint.clone()
+                }],
+            }],
+            services: BTreeMap::from([(
+                "object_storage".to_string(),
+                LocalServiceProfile {
+                    health: unknown_health(),
+                    endpoints: vec![endpoint],
+                    credentials: Some(LocalCredentials {
+                        access_key_id: Some("local".to_string()),
+                        secret_access_key: Some("secret".to_string()),
+                        username: None,
+                        password: None,
+                        token: None,
+                    }),
+                },
+            )]),
+        };
+
+        let value = serde_json::to_value(profile).unwrap();
+        assert_eq!(value["sandbox"]["provider"], json!("vfkit"));
+        assert_eq!(
+            value["routes"][0]["endpoints"][0]["visibility"],
+            json!("browser")
+        );
+        assert_eq!(
+            value["services"]["object_storage"]["credentials"]["access_key_id"],
+            json!("local")
+        );
+    }
+
+    fn profile_daemon() -> LocalDaemonProfile {
+        LocalDaemonProfile {
+            health: LocalHealth {
+                status: LocalHealthStatus::Ready,
+                message: None,
+                checked_at_unix_ms: None,
+            },
+            endpoints: vec![LocalEndpoint {
+                name: "host".to_string(),
+                visibility: LocalEndpointVisibility::Host,
+                purpose: LocalEndpointPurpose::DaemonApi,
+                protocol: LocalEndpointProtocol::Http,
+                url: Some("http://127.0.0.1:7331".to_string()),
+                health: LocalHealth {
+                    status: LocalHealthStatus::Ready,
+                    message: None,
+                    checked_at_unix_ms: None,
+                },
+            }],
+        }
+    }
+
+    fn unknown_health() -> LocalHealth {
+        LocalHealth {
+            status: LocalHealthStatus::Unknown,
+            message: None,
+            checked_at_unix_ms: None,
+        }
     }
 
     #[test]

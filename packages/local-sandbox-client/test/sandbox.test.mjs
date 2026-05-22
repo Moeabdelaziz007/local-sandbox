@@ -103,6 +103,119 @@ test("Sandbox.create maps snapshot source to snapshot_id", async () => {
   });
 });
 
+test("LocalSandboxClient.getProfile reads the daemon profile route", async () => {
+  const fetch = createMockFetch([
+    jsonResponse({
+      daemon: {
+        health: { status: "ready", message: null, checked_at_unix_ms: null },
+        endpoints: [
+          {
+            name: "daemon_api",
+            visibility: "host",
+            purpose: "daemon_api",
+            protocol: "http",
+            url: null,
+            health: {
+              status: "ready",
+              message: null,
+              checked_at_unix_ms: null,
+            },
+          },
+        ],
+      },
+      sandbox: {
+        provider: "in_memory",
+        health: { status: "unknown", message: null, checked_at_unix_ms: null },
+        endpoints: [],
+      },
+      routes: [],
+      services: {
+        object_storage: {
+          health: {
+            status: "unknown",
+            message: "not wired yet",
+            checked_at_unix_ms: null,
+          },
+          endpoints: [
+            {
+              name: "guest_api",
+              visibility: "guest",
+              purpose: "object_storage_api",
+              protocol: "http",
+              url: null,
+              health: {
+                status: "unknown",
+                message: null,
+                checked_at_unix_ms: null,
+              },
+            },
+            {
+              name: "public_objects",
+              visibility: "public",
+              purpose: "public_object_storage",
+              protocol: "http",
+              url: null,
+              health: {
+                status: "unknown",
+                message: null,
+                checked_at_unix_ms: null,
+              },
+            },
+          ],
+          credentials: {
+            access_key_id: null,
+            secret_access_key: null,
+            username: null,
+            password: null,
+            token: null,
+          },
+        },
+        database: {
+          health: {
+            status: "unknown",
+            message: "not wired yet",
+            checked_at_unix_ms: null,
+          },
+          endpoints: [
+            {
+              name: "host_postgres",
+              visibility: "host",
+              purpose: "database",
+              protocol: "postgres",
+              url: null,
+              health: {
+                status: "unknown",
+                message: null,
+                checked_at_unix_ms: null,
+              },
+            },
+          ],
+          credentials: null,
+        },
+      },
+    }),
+  ]);
+  const client = new LocalSandboxClient({
+    daemonUrl: "http://daemon.test/",
+    fetch,
+  });
+  const signal = new AbortController().signal;
+
+  const profile = await client.getProfile({ signal });
+
+  assert.equal(fetch.calls[0].url, "http://daemon.test/profile");
+  assert.equal(fetch.calls[0].init.method, "GET");
+  assert.equal(fetch.calls[0].init.signal, signal);
+  assert.equal(profile.daemon.health.status, "ready");
+  assert.equal(profile.sandbox.provider, "in_memory");
+  assert.equal(profile.services.object_storage.endpoints[0].visibility, "guest");
+  assert.equal(
+    profile.services.object_storage.endpoints[1].purpose,
+    "public_object_storage",
+  );
+  assert.equal(profile.services.database.endpoints[0].protocol, "postgres");
+});
+
 test("Sandbox command/file/timeout/snapshot methods map to daemon routes", async () => {
   const fetch = createMockFetch([
     jsonResponse(
