@@ -190,7 +190,7 @@ Review:
 
 ### PER 3C — S3 service compatibility
 
-Status: planned
+Status: in progress — 3C.1 minimal S3 substrate/profile implemented
 
 Prepare:
 
@@ -200,8 +200,9 @@ Prepare:
 
 Execute:
 
-- Implement MinIO lifecycle/profile support in `local-sandbox-services`.
-- Add AWS SDK contract tests for the supported local S3 subset.
+- 3C.1 adds product-neutral MinIO object-storage profile facts: host and guest API endpoints, credentials, region, path-style addressing, logs, and a bounded operation support matrix.
+- 3C.1 adds fakeable MinIO binary/process/health seams and deterministic lifecycle tests that do not require a real MinIO binary.
+- Real AWS SDK subset tests, browser/CORS support, versioning support, and v0-specific bucket/key policy remain out of scope for 3C.1.
 
 Review:
 

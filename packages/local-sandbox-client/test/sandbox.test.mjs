@@ -138,11 +138,11 @@ test("LocalSandboxClient.getProfile reads the daemon profile route", async () =>
           },
           endpoints: [
             {
-              name: "guest_api",
-              visibility: "guest",
+              name: "host_api",
+              visibility: "host",
               purpose: "object_storage_api",
               protocol: "http",
-              url: null,
+              url: "http://127.0.0.1:9000",
               health: {
                 status: "unknown",
                 message: null,
@@ -150,11 +150,11 @@ test("LocalSandboxClient.getProfile reads the daemon profile route", async () =>
               },
             },
             {
-              name: "public_objects",
-              visibility: "public",
-              purpose: "public_object_storage",
+              name: "guest_api",
+              visibility: "guest",
+              purpose: "object_storage_api",
               protocol: "http",
-              url: null,
+              url: "http://host.internal:9000",
               health: {
                 status: "unknown",
                 message: null,
@@ -163,11 +163,38 @@ test("LocalSandboxClient.getProfile reads the daemon profile route", async () =>
             },
           ],
           credentials: {
-            access_key_id: null,
-            secret_access_key: null,
+            access_key_id: "local-sandbox",
+            secret_access_key: "local-sandbox-secret",
             username: null,
             password: null,
             token: null,
+          },
+          logs: [
+            {
+              name: "service",
+              path: "/tmp/local-sandbox/minio.log",
+              stream: null,
+            },
+          ],
+          object_storage: {
+            region: "us-east-1",
+            force_path_style: true,
+            capabilities: {
+              create_bucket: true,
+              put_object: true,
+              get_object: true,
+              head_object: true,
+              delete_object: true,
+              delete_objects: true,
+              list_objects_v2: true,
+              copy_object: true,
+              presigned_get: true,
+              presigned_put: true,
+              cors: false,
+              browser_upload: false,
+              versioning: false,
+              list_object_versions: false,
+            },
           },
         },
         database: {
@@ -191,6 +218,8 @@ test("LocalSandboxClient.getProfile reads the daemon profile route", async () =>
             },
           ],
           credentials: null,
+          logs: [],
+          object_storage: null,
         },
       },
     }),
@@ -208,10 +237,40 @@ test("LocalSandboxClient.getProfile reads the daemon profile route", async () =>
   assert.equal(fetch.calls[0].init.signal, signal);
   assert.equal(profile.daemon.health.status, "ready");
   assert.equal(profile.sandbox.provider, "in_memory");
-  assert.equal(profile.services.object_storage.endpoints[0].visibility, "guest");
+  assert.equal(profile.services.object_storage.endpoints[0].visibility, "host");
   assert.equal(
-    profile.services.object_storage.endpoints[1].purpose,
-    "public_object_storage",
+    profile.services.object_storage.endpoints[0].url,
+    "http://127.0.0.1:9000",
+  );
+  assert.equal(
+    profile.services.object_storage.endpoints[1].visibility,
+    "guest",
+  );
+  assert.equal(
+    profile.services.object_storage.endpoints[1].url,
+    "http://host.internal:9000",
+  );
+  assert.equal(profile.services.object_storage.logs[0].name, "service");
+  assert.equal(profile.services.object_storage.object_storage.region, "us-east-1");
+  assert.equal(
+    profile.services.object_storage.object_storage.force_path_style,
+    true,
+  );
+  assert.equal(
+    profile.services.object_storage.object_storage.capabilities.create_bucket,
+    true,
+  );
+  assert.equal(
+    profile.services.object_storage.object_storage.capabilities.presigned_put,
+    true,
+  );
+  assert.equal(
+    profile.services.object_storage.object_storage.capabilities.cors,
+    false,
+  );
+  assert.equal(
+    profile.services.object_storage.object_storage.capabilities.versioning,
+    false,
   );
   assert.equal(profile.services.database.endpoints[0].protocol, "postgres");
 });

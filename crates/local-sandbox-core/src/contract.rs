@@ -186,6 +186,68 @@ pub struct LocalServiceProfile {
     pub endpoints: Vec<LocalEndpoint>,
     /// Credentials used by local clients, if the service has credentials.
     pub credentials: Option<LocalCredentials>,
+    /// Logs exposed for local diagnostics.
+    #[serde(default)]
+    pub logs: Vec<LocalLogProfile>,
+    /// Object-storage-specific facts, when this service is S3-compatible.
+    #[serde(default)]
+    pub object_storage: Option<LocalObjectStorageProfile>,
+}
+
+/// Local diagnostic log facts.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct LocalLogProfile {
+    /// Stable log label within its service profile.
+    pub name: String,
+    /// Filesystem path for file-backed logs, if available.
+    pub path: Option<String>,
+    /// Process stream name for stream-backed logs, if available.
+    pub stream: Option<String>,
+}
+
+/// S3-compatible object-storage profile facts.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct LocalObjectStorageProfile {
+    /// Region used by local S3-compatible clients.
+    pub region: String,
+    /// Whether clients must use path-style bucket addressing.
+    pub force_path_style: bool,
+    /// Supported and unsupported S3-compatible operations.
+    pub capabilities: LocalObjectStorageCapabilities,
+}
+
+/// S3-compatible object-storage operation support flags.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct LocalObjectStorageCapabilities {
+    /// Bucket creation is supported.
+    pub create_bucket: bool,
+    /// Object writes are supported.
+    pub put_object: bool,
+    /// Object reads are supported.
+    pub get_object: bool,
+    /// Object metadata reads are supported.
+    pub head_object: bool,
+    /// Single-object deletion is supported.
+    pub delete_object: bool,
+    /// Multi-object deletion is supported.
+    pub delete_objects: bool,
+    /// Object listing through `ListObjectsV2` is supported.
+    pub list_objects_v2: bool,
+    /// Object copies are supported.
+    pub copy_object: bool,
+    /// Presigned object reads are supported.
+    pub presigned_get: bool,
+    /// Presigned object writes are supported.
+    pub presigned_put: bool,
+    /// Bucket CORS configuration is supported.
+    pub cors: bool,
+    /// Browser direct upload support is available.
+    pub browser_upload: bool,
+    /// Object versioning is supported.
+    pub versioning: bool,
+    /// Object version listing is supported.
+    pub list_object_versions: bool,
 }
 
 /// Local endpoint visibility class.
@@ -662,6 +724,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn serializes_local_profile_endpoint_taxonomy() {
         let endpoint = LocalEndpoint {
             name: "public_objects".to_string(),
@@ -721,6 +784,31 @@ mod tests {
                         password: None,
                         token: None,
                     }),
+                    logs: vec![LocalLogProfile {
+                        name: "service".to_string(),
+                        path: Some("/tmp/local-sandbox/minio.log".to_string()),
+                        stream: None,
+                    }],
+                    object_storage: Some(LocalObjectStorageProfile {
+                        region: "us-east-1".to_string(),
+                        force_path_style: true,
+                        capabilities: LocalObjectStorageCapabilities {
+                            create_bucket: true,
+                            put_object: true,
+                            get_object: true,
+                            head_object: true,
+                            delete_object: true,
+                            delete_objects: true,
+                            list_objects_v2: true,
+                            copy_object: true,
+                            presigned_get: true,
+                            presigned_put: true,
+                            cors: false,
+                            browser_upload: false,
+                            versioning: false,
+                            list_object_versions: false,
+                        },
+                    }),
                 },
             )]),
         };
@@ -734,6 +822,33 @@ mod tests {
         assert_eq!(
             value["services"]["object_storage"]["credentials"]["access_key_id"],
             json!("local")
+        );
+        assert_eq!(
+            value["services"]["object_storage"]["logs"][0]["path"],
+            json!("/tmp/local-sandbox/minio.log")
+        );
+        assert_eq!(
+            value["services"]["object_storage"]["object_storage"],
+            json!({
+                "region": "us-east-1",
+                "force_path_style": true,
+                "capabilities": {
+                    "create_bucket": true,
+                    "put_object": true,
+                    "get_object": true,
+                    "head_object": true,
+                    "delete_object": true,
+                    "delete_objects": true,
+                    "list_objects_v2": true,
+                    "copy_object": true,
+                    "presigned_get": true,
+                    "presigned_put": true,
+                    "cors": false,
+                    "browser_upload": false,
+                    "versioning": false,
+                    "list_object_versions": false,
+                }
+            })
         );
     }
 

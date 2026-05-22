@@ -612,6 +612,7 @@ dependencies = [
  "anyhow",
  "axum",
  "local-sandbox-core",
+ "local-sandbox-services",
  "serde",
  "serde_json",
  "tokio",
@@ -636,7 +637,9 @@ dependencies = [
 name = "local-sandbox-services"
 version = "0.1.0"
 dependencies = [
+ "local-sandbox-core",
  "serde",
+ "tokio",
 ]
 
 [[package]]

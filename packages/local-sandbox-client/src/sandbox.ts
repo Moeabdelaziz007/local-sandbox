@@ -107,6 +107,37 @@ export interface LocalServiceProfile {
   health: LocalHealth;
   endpoints: LocalEndpoint[];
   credentials?: LocalCredentials | null;
+  logs?: LocalLogProfile[] | null;
+  object_storage?: LocalObjectStorageProfile | null;
+}
+
+export interface LocalLogProfile {
+  name: string;
+  path?: string | null;
+  stream?: string | null;
+}
+
+export interface LocalObjectStorageProfile {
+  region: string;
+  force_path_style: boolean;
+  capabilities: LocalObjectStorageCapabilities;
+}
+
+export interface LocalObjectStorageCapabilities {
+  create_bucket: boolean;
+  put_object: boolean;
+  get_object: boolean;
+  head_object: boolean;
+  delete_object: boolean;
+  delete_objects: boolean;
+  list_objects_v2: boolean;
+  copy_object: boolean;
+  presigned_get: boolean;
+  presigned_put: boolean;
+  cors: boolean;
+  browser_upload: boolean;
+  versioning: boolean;
+  list_object_versions: boolean;
 }
 
 export type LocalEndpointVisibility = "host" | "guest" | "browser" | "public";
@@ -319,11 +350,15 @@ export class LocalSandboxClient {
     return new Sandbox(this, sandbox);
   }
 
-  async getProfile(params: { signal?: AbortSignal } = {}): Promise<LocalProfile> {
+  async getProfile(
+    params: { signal?: AbortSignal } = {},
+  ): Promise<LocalProfile> {
     throwIfAborted(params.signal);
-    return this.request<LocalProfile>(
-      "/profile",
-      requestOptions({ signal: params.signal }),
+    return normalizeProfile(
+      await this.request<LocalProfile>(
+        "/profile",
+        requestOptions({ signal: params.signal }),
+      ),
     );
   }
 
@@ -685,6 +720,13 @@ function validatePort(port: number): number {
     throw new Error(`invalid sandbox port: ${port}`);
   }
   return port;
+}
+
+function normalizeProfile(profile: LocalProfile): LocalProfile {
+  for (const service of Object.values(profile.services)) {
+    service.logs ??= [];
+  }
+  return profile;
 }
 
 function getDefaultClient(): LocalSandboxClient {

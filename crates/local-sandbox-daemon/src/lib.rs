@@ -15,6 +15,7 @@ use local_sandbox_core::{
     SandboxError, SandboxErrorCode, SandboxId, SandboxProvider, SetNetworkPolicyRequest,
     WriteFilesRequest,
 };
+use local_sandbox_services::{object_storage_profile, ObjectStorageConfig};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -22,6 +23,7 @@ use std::{collections::BTreeMap, sync::Arc};
 #[derive(Clone)]
 pub struct DaemonState {
     provider: Arc<dyn SandboxProvider>,
+    profile_source: Arc<dyn ServiceProfileSource>,
 }
 
 impl DaemonState {
@@ -30,12 +32,48 @@ impl DaemonState {
     pub fn new(provider: impl SandboxProvider) -> Self {
         Self {
             provider: Arc::new(provider),
+            profile_source: Arc::new(DefaultServiceProfileSource::default()),
         }
+    }
+
+    /// Override service profile facts for tests or alternate daemon wiring.
+    #[must_use]
+    pub fn with_profile_source(
+        mut self,
+        profile_source: impl ServiceProfileSource + 'static,
+    ) -> Self {
+        self.profile_source = Arc::new(profile_source);
+        self
     }
 
     async fn profile(&self) -> Result<LocalProfile, SandboxError> {
         let capabilities = self.provider.capabilities().await?;
-        Ok(default_profile(capabilities.provider))
+        Ok(default_profile(
+            capabilities.provider,
+            self.profile_source.services(),
+        ))
+    }
+}
+
+/// Source of product-neutral local service profile facts.
+pub trait ServiceProfileSource: Send + Sync {
+    /// Return local service profiles keyed by product-neutral service name.
+    fn services(&self) -> BTreeMap<String, LocalServiceProfile>;
+}
+
+#[derive(Default)]
+struct DefaultServiceProfileSource {
+    object_storage: ObjectStorageConfig,
+}
+
+impl ServiceProfileSource for DefaultServiceProfileSource {
+    fn services(&self) -> BTreeMap<String, LocalServiceProfile> {
+        let mut services = default_unknown_services();
+        services.insert(
+            "object_storage".to_string(),
+            object_storage_profile(&self.object_storage),
+        );
+        services
     }
 }
 
@@ -248,7 +286,10 @@ fn error_message(error: &SandboxError) -> String {
     }
 }
 
-fn default_profile(provider: String) -> LocalProfile {
+fn default_profile(
+    provider: String,
+    services: BTreeMap<String, LocalServiceProfile>,
+) -> LocalProfile {
     LocalProfile {
         daemon: LocalDaemonProfile {
             health: ready_health(),
@@ -267,81 +308,60 @@ fn default_profile(provider: String) -> LocalProfile {
             endpoints: Vec::new(),
         },
         routes: Vec::new(),
-        services: BTreeMap::from([
-            (
-                "object_storage".to_string(),
-                LocalServiceProfile {
-                    health: unwired_health(),
-                    endpoints: vec![
-                        fake_endpoint(
-                            "host_api",
-                            LocalEndpointVisibility::Host,
-                            LocalEndpointPurpose::ObjectStorageApi,
-                            LocalEndpointProtocol::Http,
-                        ),
-                        fake_endpoint(
-                            "guest_api",
-                            LocalEndpointVisibility::Guest,
-                            LocalEndpointPurpose::ObjectStorageApi,
-                            LocalEndpointProtocol::Http,
-                        ),
-                        fake_endpoint(
-                            "public_objects",
-                            LocalEndpointVisibility::Public,
-                            LocalEndpointPurpose::PublicObjectStorage,
-                            LocalEndpointProtocol::Http,
-                        ),
-                    ],
-                    credentials: Some(LocalCredentials {
-                        access_key_id: None,
-                        secret_access_key: None,
-                        username: None,
-                        password: None,
-                        token: None,
-                    }),
-                },
-            ),
-            (
-                "database".to_string(),
-                LocalServiceProfile {
-                    health: unwired_health(),
-                    endpoints: vec![
-                        fake_endpoint(
-                            "host_postgres",
-                            LocalEndpointVisibility::Host,
-                            LocalEndpointPurpose::Database,
-                            LocalEndpointProtocol::Postgres,
-                        ),
-                        fake_endpoint(
-                            "guest_postgres",
-                            LocalEndpointVisibility::Guest,
-                            LocalEndpointPurpose::Database,
-                            LocalEndpointProtocol::Postgres,
-                        ),
-                    ],
-                    credentials: Some(LocalCredentials {
-                        access_key_id: None,
-                        secret_access_key: None,
-                        username: None,
-                        password: None,
-                        token: None,
-                    }),
-                },
-            ),
-            (
-                "callbacks".to_string(),
-                LocalServiceProfile {
-                    health: unwired_health(),
-                    endpoints: vec![fake_endpoint(
-                        "host_callback",
+        services,
+    }
+}
+
+fn default_unknown_services() -> BTreeMap<String, LocalServiceProfile> {
+    BTreeMap::from([
+        (
+            "database".to_string(),
+            LocalServiceProfile {
+                health: unwired_health(),
+                endpoints: vec![
+                    fake_endpoint(
+                        "host_postgres",
                         LocalEndpointVisibility::Host,
-                        LocalEndpointPurpose::Callback,
-                        LocalEndpointProtocol::Http,
-                    )],
-                    credentials: None,
-                },
-            ),
-        ]),
+                        LocalEndpointPurpose::Database,
+                        LocalEndpointProtocol::Postgres,
+                    ),
+                    fake_endpoint(
+                        "guest_postgres",
+                        LocalEndpointVisibility::Guest,
+                        LocalEndpointPurpose::Database,
+                        LocalEndpointProtocol::Postgres,
+                    ),
+                ],
+                credentials: Some(empty_credentials()),
+                logs: Vec::new(),
+                object_storage: None,
+            },
+        ),
+        (
+            "callbacks".to_string(),
+            LocalServiceProfile {
+                health: unwired_health(),
+                endpoints: vec![fake_endpoint(
+                    "host_callback",
+                    LocalEndpointVisibility::Host,
+                    LocalEndpointPurpose::Callback,
+                    LocalEndpointProtocol::Http,
+                )],
+                credentials: None,
+                logs: Vec::new(),
+                object_storage: None,
+            },
+        ),
+    ])
+}
+
+fn empty_credentials() -> LocalCredentials {
+    LocalCredentials {
+        access_key_id: None,
+        secret_access_key: None,
+        username: None,
+        password: None,
+        token: None,
     }
 }
 
@@ -435,18 +455,38 @@ mod tests {
 
         let object_storage = profile.services.get("object_storage").unwrap();
         assert_eq!(object_storage.health.status, LocalHealthStatus::Unknown);
-        assert_eq!(object_storage.endpoints.len(), 3);
+        assert_eq!(object_storage.endpoints.len(), 2);
+        assert!(object_storage.endpoints.iter().any(|endpoint| {
+            endpoint.visibility == LocalEndpointVisibility::Host
+                && endpoint.purpose == LocalEndpointPurpose::ObjectStorageApi
+                && endpoint.protocol == LocalEndpointProtocol::Http
+                && endpoint.url.as_deref() == Some("http://127.0.0.1:9000")
+        }));
         assert!(object_storage.endpoints.iter().any(|endpoint| {
             endpoint.visibility == LocalEndpointVisibility::Guest
                 && endpoint.purpose == LocalEndpointPurpose::ObjectStorageApi
                 && endpoint.protocol == LocalEndpointProtocol::Http
-                && endpoint.url.is_none()
-        }));
-        assert!(object_storage.endpoints.iter().any(|endpoint| {
-            endpoint.visibility == LocalEndpointVisibility::Public
-                && endpoint.purpose == LocalEndpointPurpose::PublicObjectStorage
+                && endpoint.url.as_deref() == Some("http://host.internal:9000")
         }));
         assert!(object_storage.credentials.is_some());
+        let object_storage_details = object_storage.object_storage.as_ref().unwrap();
+        assert_eq!(object_storage_details.region, "us-east-1");
+        assert!(object_storage_details.force_path_style);
+        assert!(object_storage_details.capabilities.create_bucket);
+        assert!(object_storage_details.capabilities.put_object);
+        assert!(object_storage_details.capabilities.get_object);
+        assert!(object_storage_details.capabilities.head_object);
+        assert!(object_storage_details.capabilities.delete_object);
+        assert!(object_storage_details.capabilities.delete_objects);
+        assert!(object_storage_details.capabilities.list_objects_v2);
+        assert!(object_storage_details.capabilities.copy_object);
+        assert!(object_storage_details.capabilities.presigned_get);
+        assert!(object_storage_details.capabilities.presigned_put);
+        assert!(!object_storage_details.capabilities.cors);
+        assert!(!object_storage_details.capabilities.browser_upload);
+        assert!(!object_storage_details.capabilities.versioning);
+        assert!(!object_storage_details.capabilities.list_object_versions);
+        assert_eq!(object_storage.logs.len(), 1);
 
         let database = profile.services.get("database").unwrap();
         assert!(database.endpoints.iter().any(|endpoint| {
@@ -454,6 +494,57 @@ mod tests {
                 && endpoint.purpose == LocalEndpointPurpose::Database
                 && endpoint.protocol == LocalEndpointProtocol::Postgres
         }));
+    }
+
+    #[tokio::test]
+    async fn profile_route_accepts_injected_service_profile_source() {
+        #[derive(Clone)]
+        struct TestProfileSource;
+
+        impl ServiceProfileSource for TestProfileSource {
+            fn services(&self) -> BTreeMap<String, LocalServiceProfile> {
+                BTreeMap::from([(
+                    "object_storage".to_string(),
+                    LocalServiceProfile {
+                        health: LocalHealth {
+                            status: LocalHealthStatus::Ready,
+                            message: None,
+                            checked_at_unix_ms: None,
+                        },
+                        endpoints: vec![LocalEndpoint {
+                            name: "host_api".to_string(),
+                            visibility: LocalEndpointVisibility::Host,
+                            purpose: LocalEndpointPurpose::ObjectStorageApi,
+                            protocol: LocalEndpointProtocol::Http,
+                            url: Some("http://127.0.0.1:19000".to_string()),
+                            health: LocalHealth {
+                                status: LocalHealthStatus::Ready,
+                                message: None,
+                                checked_at_unix_ms: None,
+                            },
+                        }],
+                        credentials: None,
+                        logs: Vec::new(),
+                        object_storage: None,
+                    },
+                )])
+            }
+        }
+
+        let state =
+            DaemonState::new(InMemorySandboxProvider::new()).with_profile_source(TestProfileSource);
+        let app = router_with_state(state);
+
+        let response = app.oneshot(request("GET", "/profile", None)).await.unwrap();
+
+        let profile = json_body::<LocalProfile>(response).await;
+        assert_eq!(
+            profile.services["object_storage"].endpoints[0]
+                .url
+                .as_deref(),
+            Some("http://127.0.0.1:19000")
+        );
+        assert!(!profile.services.contains_key("database"));
     }
 
     #[tokio::test]
