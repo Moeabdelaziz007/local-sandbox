@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     env,
+    ffi::OsString,
     path::PathBuf,
     process::Stdio,
     sync::{Arc, Mutex},
@@ -22,6 +23,28 @@ const DEFAULT_MINIO_CONSOLE_PORT: u16 = 9_001;
 const DEFAULT_ACCESS_KEY_ID: &str = "local-sandbox";
 const DEFAULT_SECRET_ACCESS_KEY: &str = "local-sandbox-secret";
 const DEFAULT_REGION: &str = "us-east-1";
+
+/// Environment variable for an explicit `MinIO` binary path.
+pub const ENV_MINIO_BINARY: &str = "LOCAL_SANDBOX_MINIO_BINARY";
+/// Environment variable for object-storage data directory.
+pub const ENV_OBJECT_STORAGE_DATA_DIR: &str = "LOCAL_SANDBOX_OBJECT_STORAGE_DATA_DIR";
+/// Environment variable for object-storage API bind host.
+pub const ENV_OBJECT_STORAGE_API_HOST: &str = "LOCAL_SANDBOX_OBJECT_STORAGE_API_HOST";
+/// Environment variable for object-storage API port.
+pub const ENV_OBJECT_STORAGE_API_PORT: &str = "LOCAL_SANDBOX_OBJECT_STORAGE_API_PORT";
+/// Environment variable for object-storage console port.
+pub const ENV_OBJECT_STORAGE_CONSOLE_PORT: &str = "LOCAL_SANDBOX_OBJECT_STORAGE_CONSOLE_PORT";
+/// Environment variable for S3-compatible object-storage region.
+pub const ENV_OBJECT_STORAGE_REGION: &str = "LOCAL_SANDBOX_OBJECT_STORAGE_REGION";
+/// Environment variable for object-storage access key id.
+pub const ENV_OBJECT_STORAGE_ACCESS_KEY_ID: &str = "LOCAL_SANDBOX_OBJECT_STORAGE_ACCESS_KEY_ID";
+/// Environment variable for object-storage secret access key.
+pub const ENV_OBJECT_STORAGE_SECRET_ACCESS_KEY: &str =
+    "LOCAL_SANDBOX_OBJECT_STORAGE_SECRET_ACCESS_KEY";
+/// Environment variable for the guest-visible object-storage host.
+pub const ENV_OBJECT_STORAGE_GUEST_HOST: &str = "LOCAL_SANDBOX_OBJECT_STORAGE_GUEST_HOST";
+/// Environment variable for the object-storage process log path.
+pub const ENV_OBJECT_STORAGE_LOG_PATH: &str = "LOCAL_SANDBOX_OBJECT_STORAGE_LOG_PATH";
 
 /// Local service kind managed by the substrate.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -90,6 +113,50 @@ impl Default for ObjectStorageConfig {
 }
 
 impl ObjectStorageConfig {
+    /// Build object-storage config from product-neutral local-sandbox environment variables.
+    pub fn from_env() -> SandboxResult<Self> {
+        Self::from_env_reader(|name| env::var_os(name))
+    }
+
+    fn from_env_reader(mut read: impl FnMut(&str) -> Option<OsString>) -> SandboxResult<Self> {
+        let mut config = Self::default();
+
+        if let Some(value) = read_env_path(&mut read, ENV_MINIO_BINARY) {
+            config.minio_binary = Some(value);
+        }
+        if let Some(value) = read_env_path(&mut read, ENV_OBJECT_STORAGE_DATA_DIR) {
+            config.data_dir = value;
+        }
+        if let Some(value) = read_env_string(&mut read, ENV_OBJECT_STORAGE_API_HOST)? {
+            config.host_endpoint_host = host_endpoint_host_for_api_host(&value);
+            config.api_host.clone_from(&value);
+            config.console_host = value;
+        }
+        if let Some(value) = read_env_u16(&mut read, ENV_OBJECT_STORAGE_API_PORT)? {
+            config.api_port = value;
+        }
+        if let Some(value) = read_env_u16(&mut read, ENV_OBJECT_STORAGE_CONSOLE_PORT)? {
+            config.console_port = value;
+        }
+        if let Some(value) = read_env_string(&mut read, ENV_OBJECT_STORAGE_REGION)? {
+            config.region = value;
+        }
+        if let Some(value) = read_env_string(&mut read, ENV_OBJECT_STORAGE_ACCESS_KEY_ID)? {
+            config.access_key_id = value;
+        }
+        if let Some(value) = read_env_string(&mut read, ENV_OBJECT_STORAGE_SECRET_ACCESS_KEY)? {
+            config.secret_access_key = value;
+        }
+        if let Some(value) = read_env_string(&mut read, ENV_OBJECT_STORAGE_GUEST_HOST)? {
+            config.guest_endpoint_host = value;
+        }
+        if let Some(value) = read_env_path(&mut read, ENV_OBJECT_STORAGE_LOG_PATH) {
+            config.log_path = Some(value);
+        }
+
+        Ok(config)
+    }
+
     /// Endpoint reachable from the host process namespace.
     #[must_use]
     pub fn host_endpoint(&self) -> String {
@@ -201,6 +268,179 @@ fn endpoint(
 #[must_use]
 pub fn object_storage_profile(config: &ObjectStorageConfig) -> LocalServiceProfile {
     config.profile(&unknown_health())
+}
+
+/// Daemon-owned object-storage service manager.
+#[derive(Clone)]
+pub struct ObjectStorageManager {
+    inner: Arc<ObjectStorageManagerInner>,
+}
+
+struct ObjectStorageManagerInner {
+    service: ObjectStorageService,
+    state: Mutex<ObjectStorageManagerRecord>,
+}
+
+struct ObjectStorageManagerRecord {
+    phase: ObjectStorageManagerPhase,
+    running: Option<RunningObjectStorage>,
+}
+
+/// Object-storage lifecycle state surfaced through the service health profile.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ObjectStorageManagerPhase {
+    /// Object storage has not been started.
+    NotStarted,
+    /// Object storage startup is in progress.
+    Starting,
+    /// Object storage is running and ready.
+    Running,
+    /// Object storage startup or shutdown failed.
+    Failed {
+        /// Human-readable failure message.
+        message: String,
+    },
+    /// Object storage was stopped.
+    Stopped,
+}
+
+impl ObjectStorageManager {
+    /// Create an object-storage manager for this service.
+    #[must_use]
+    pub fn new(service: ObjectStorageService) -> Self {
+        Self {
+            inner: Arc::new(ObjectStorageManagerInner {
+                service,
+                state: Mutex::new(ObjectStorageManagerRecord {
+                    phase: ObjectStorageManagerPhase::NotStarted,
+                    running: None,
+                }),
+            }),
+        }
+    }
+
+    /// Create an object-storage manager from config and production seams.
+    #[must_use]
+    pub fn from_config(config: ObjectStorageConfig) -> Self {
+        Self::new(ObjectStorageService::new(config))
+    }
+
+    /// Create an object-storage manager already marked as failed.
+    #[must_use]
+    pub fn failed(config: ObjectStorageConfig, message: String) -> Self {
+        let manager = Self::from_config(config);
+        if let Ok(mut state) = manager.state() {
+            state.phase = ObjectStorageManagerPhase::Failed { message };
+            state.running = None;
+        }
+        manager
+    }
+
+    /// Start object storage and store the running service handle.
+    pub async fn start(&self) -> SandboxResult<()> {
+        {
+            let mut state = self.state()?;
+            if matches!(state.phase, ObjectStorageManagerPhase::Running) {
+                return Ok(());
+            }
+            if matches!(state.phase, ObjectStorageManagerPhase::Starting) {
+                return Err(SandboxError::provider(
+                    "object storage startup already in progress",
+                ));
+            }
+            state.phase = ObjectStorageManagerPhase::Starting;
+            state.running = None;
+        }
+
+        match self.inner.service.start().await {
+            Ok(running) => {
+                let mut state = self.state()?;
+                state.phase = ObjectStorageManagerPhase::Running;
+                state.running = Some(running);
+                Ok(())
+            }
+            Err(error) => {
+                let mut state = self.state()?;
+                state.phase = ObjectStorageManagerPhase::Failed {
+                    message: error.to_string(),
+                };
+                state.running = None;
+                Err(error)
+            }
+        }
+    }
+
+    /// Stop object storage if it is running.
+    pub fn shutdown(&self) -> SandboxResult<()> {
+        let running = {
+            let mut state = self.state()?;
+            state.phase = ObjectStorageManagerPhase::Stopped;
+            state.running.take()
+        };
+
+        if let Some(running) = running {
+            if let Err(error) = running.stop() {
+                let mut state = self.state()?;
+                state.phase = ObjectStorageManagerPhase::Failed {
+                    message: error.to_string(),
+                };
+                return Err(error);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Return the current object-storage service profile.
+    #[must_use]
+    pub fn profile(&self) -> LocalServiceProfile {
+        let state = self
+            .inner
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        match &state.phase {
+            ObjectStorageManagerPhase::NotStarted => {
+                self.inner.service.config.profile(&unknown_health())
+            }
+            ObjectStorageManagerPhase::Starting => {
+                self.inner.service.config.profile(&starting_health())
+            }
+            ObjectStorageManagerPhase::Running => state.running.as_ref().map_or_else(
+                || {
+                    self.inner.service.config.profile(&failed_health(
+                        "object-storage running state is missing process handle",
+                    ))
+                },
+                RunningObjectStorage::profile,
+            ),
+            ObjectStorageManagerPhase::Failed { message } => {
+                self.inner.service.config.profile(&failed_health(message))
+            }
+            ObjectStorageManagerPhase::Stopped => {
+                self.inner.service.config.profile(&stopped_health())
+            }
+        }
+    }
+
+    /// Return the current object-storage lifecycle state.
+    #[must_use]
+    pub fn phase(&self) -> ObjectStorageManagerPhase {
+        self.inner
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .phase
+            .clone()
+    }
+
+    fn state(&self) -> SandboxResult<std::sync::MutexGuard<'_, ObjectStorageManagerRecord>> {
+        self.inner
+            .state
+            .lock()
+            .map_err(|_| SandboxError::provider("object-storage manager lock poisoned"))
+    }
 }
 
 /// Local object-storage lifecycle boundary.
@@ -372,6 +612,7 @@ impl MinioProcessRunner for TokioMinioProcessRunner {
             .arg(format!("{}:{}", config.console_host, config.console_port))
             .env("MINIO_ROOT_USER", &config.access_key_id)
             .env("MINIO_ROOT_PASSWORD", &config.secret_access_key)
+            .env("MINIO_REGION_NAME", &config.region)
             .stdout(stdout)
             .stderr(stderr)
             .spawn()
@@ -464,6 +705,45 @@ fn log_stdio(config: &ObjectStorageConfig) -> SandboxResult<Stdio> {
     )
 }
 
+fn read_env_path(read: &mut impl FnMut(&str) -> Option<OsString>, name: &str) -> Option<PathBuf> {
+    read(name)
+        .filter(|value| !value.as_os_str().is_empty())
+        .map(PathBuf::from)
+}
+
+fn read_env_string(
+    read: &mut impl FnMut(&str) -> Option<OsString>,
+    name: &str,
+) -> SandboxResult<Option<String>> {
+    read(name)
+        .filter(|value| !value.as_os_str().is_empty())
+        .map(|value| {
+            value.into_string().map_err(|_| {
+                SandboxError::invalid_request(format!("{name} must contain valid unicode"))
+            })
+        })
+        .transpose()
+}
+
+fn read_env_u16(
+    read: &mut impl FnMut(&str) -> Option<OsString>,
+    name: &str,
+) -> SandboxResult<Option<u16>> {
+    read_env_string(read, name)?.map_or(Ok(None), |value| {
+        value.parse::<u16>().map(Some).map_err(|error| {
+            SandboxError::invalid_request(format!("{name} must be a TCP port: {error}"))
+        })
+    })
+}
+
+fn host_endpoint_host_for_api_host(api_host: &str) -> String {
+    if api_host == "0.0.0.0" || api_host == "::" {
+        "127.0.0.1".to_string()
+    } else {
+        api_host.to_string()
+    }
+}
+
 fn ready_health() -> LocalHealth {
     LocalHealth {
         status: LocalHealthStatus::Ready,
@@ -480,10 +760,90 @@ fn unknown_health() -> LocalHealth {
     }
 }
 
+fn starting_health() -> LocalHealth {
+    LocalHealth {
+        status: LocalHealthStatus::Starting,
+        message: Some("starting".to_string()),
+        checked_at_unix_ms: None,
+    }
+}
+
+fn failed_health(message: &str) -> LocalHealth {
+    LocalHealth {
+        status: LocalHealthStatus::Failed,
+        message: Some(message.to_string()),
+        checked_at_unix_ms: None,
+    }
+}
+
+fn stopped_health() -> LocalHealth {
+    LocalHealth {
+        status: LocalHealthStatus::Stopped,
+        message: Some("stopped".to_string()),
+        checked_at_unix_ms: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{future::Future, path::Path, pin::Pin, sync::Mutex};
+    use std::{collections::BTreeMap, future::Future, path::Path, pin::Pin, sync::Mutex};
+
+    #[test]
+    fn object_storage_config_reads_product_neutral_environment() {
+        let env = BTreeMap::from([
+            (ENV_MINIO_BINARY, "/opt/minio"),
+            (ENV_OBJECT_STORAGE_DATA_DIR, "/var/local-sandbox/minio-data"),
+            (ENV_OBJECT_STORAGE_API_HOST, "0.0.0.0"),
+            (ENV_OBJECT_STORAGE_API_PORT, "19000"),
+            (ENV_OBJECT_STORAGE_CONSOLE_PORT, "19001"),
+            (ENV_OBJECT_STORAGE_REGION, "local-test-1"),
+            (ENV_OBJECT_STORAGE_ACCESS_KEY_ID, "test-access-key"),
+            (ENV_OBJECT_STORAGE_SECRET_ACCESS_KEY, "test-secret-key"),
+            (ENV_OBJECT_STORAGE_GUEST_HOST, "host.internal"),
+            (
+                ENV_OBJECT_STORAGE_LOG_PATH,
+                "/var/log/local-sandbox/minio.log",
+            ),
+        ]);
+
+        let config = ObjectStorageConfig::from_env_reader(|name| {
+            env.get(name)
+                .map(|value| OsString::from((*value).to_string()))
+        })
+        .unwrap();
+
+        assert_eq!(config.minio_binary, Some(PathBuf::from("/opt/minio")));
+        assert_eq!(
+            config.data_dir,
+            PathBuf::from("/var/local-sandbox/minio-data")
+        );
+        assert_eq!(config.api_host, "0.0.0.0");
+        assert_eq!(config.console_host, "0.0.0.0");
+        assert_eq!(config.api_port, 19_000);
+        assert_eq!(config.console_port, 19_001);
+        assert_eq!(config.host_endpoint(), "http://127.0.0.1:19000");
+        assert_eq!(config.guest_endpoint(), "http://host.internal:19000");
+        assert_eq!(config.region, "local-test-1");
+        assert_eq!(config.access_key_id, "test-access-key");
+        assert_eq!(config.secret_access_key, "test-secret-key");
+        assert_eq!(
+            config.log_path,
+            Some(PathBuf::from("/var/log/local-sandbox/minio.log"))
+        );
+    }
+
+    #[test]
+    fn object_storage_config_rejects_invalid_ports() {
+        let result = ObjectStorageConfig::from_env_reader(|name| {
+            (name == ENV_OBJECT_STORAGE_API_PORT).then(|| OsString::from("not-a-port"))
+        });
+
+        assert!(matches!(
+            result,
+            Err(SandboxError::InvalidRequest { message }) if message.contains(ENV_OBJECT_STORAGE_API_PORT)
+        ));
+    }
 
     #[test]
     fn object_storage_profile_contains_minio_facts_and_bounded_capabilities() {
@@ -600,6 +960,147 @@ mod tests {
         let _ = std::fs::remove_dir_all(config.data_dir);
     }
 
+    #[tokio::test]
+    async fn object_storage_manager_stores_running_service_and_stops_on_shutdown() {
+        let config = ObjectStorageConfig {
+            data_dir: env::temp_dir()
+                .join(format!("local-sandbox-manager-test-{}", std::process::id())),
+            minio_binary: Some(PathBuf::from("/fake/minio")),
+            readiness_timeout: Duration::from_millis(1),
+            ..ObjectStorageConfig::default()
+        };
+        let runner = Arc::new(FakeRunner::default());
+        let service = ObjectStorageService::with_components(
+            config.clone(),
+            Arc::new(FakeResolver),
+            runner.clone(),
+            Arc::new(FakeProbe),
+        );
+        let manager = ObjectStorageManager::new(service);
+
+        assert_eq!(manager.profile().health.status, LocalHealthStatus::Unknown);
+        manager.start().await.unwrap();
+        assert_eq!(manager.profile().health.status, LocalHealthStatus::Ready);
+        manager.shutdown().unwrap();
+
+        assert_eq!(manager.profile().health.status, LocalHealthStatus::Stopped);
+        assert_eq!(
+            runner.stopped.lock().unwrap().as_slice(),
+            &["fake-minio".to_string()]
+        );
+        let _ = std::fs::remove_dir_all(config.data_dir);
+    }
+
+    #[tokio::test]
+    async fn object_storage_manager_keeps_failed_profile_after_start_failure() {
+        let config = ObjectStorageConfig {
+            data_dir: env::temp_dir().join(format!(
+                "local-sandbox-manager-fail-test-{}",
+                std::process::id()
+            )),
+            minio_binary: Some(PathBuf::from("/fake/minio")),
+            readiness_timeout: Duration::from_millis(1),
+            ..ObjectStorageConfig::default()
+        };
+        let service = ObjectStorageService::with_components(
+            config.clone(),
+            Arc::new(FakeResolver),
+            Arc::new(FakeRunner::default()),
+            Arc::new(FailingProbe),
+        );
+        let manager = ObjectStorageManager::new(service);
+
+        let result = manager.start().await;
+
+        assert!(result.is_err());
+        let profile = manager.profile();
+        assert_eq!(profile.health.status, LocalHealthStatus::Failed);
+        assert!(profile.health.message.unwrap().contains("health failed"));
+        let _ = std::fs::remove_dir_all(config.data_dir);
+    }
+
+    #[tokio::test]
+    async fn object_storage_manager_rejects_concurrent_startup() {
+        let config = ObjectStorageConfig {
+            data_dir: env::temp_dir().join(format!(
+                "local-sandbox-manager-slow-test-{}",
+                std::process::id()
+            )),
+            minio_binary: Some(PathBuf::from("/fake/minio")),
+            readiness_timeout: Duration::from_millis(1),
+            ..ObjectStorageConfig::default()
+        };
+        let service = ObjectStorageService::with_components(
+            config.clone(),
+            Arc::new(FakeResolver),
+            Arc::new(FakeRunner::default()),
+            Arc::new(SlowProbe),
+        );
+        let manager = ObjectStorageManager::new(service);
+        let first_start_manager = manager.clone();
+        let first_start = tokio::spawn(async move { first_start_manager.start().await });
+
+        while !matches!(manager.phase(), ObjectStorageManagerPhase::Starting) {
+            tokio::task::yield_now().await;
+        }
+
+        let second_start = manager.start().await;
+
+        assert!(
+            matches!(second_start, Err(SandboxError::Provider { message }) if message == "object storage startup already in progress")
+        );
+        first_start.await.unwrap().unwrap();
+        manager.shutdown().unwrap();
+        let _ = std::fs::remove_dir_all(config.data_dir);
+    }
+
+    #[test]
+    fn object_storage_manager_reports_missing_running_handle_as_failed() {
+        let manager = ObjectStorageManager::from_config(ObjectStorageConfig::default());
+        manager.set_phase_for_test(ObjectStorageManagerPhase::Running);
+
+        let profile = manager.profile();
+
+        assert_eq!(profile.health.status, LocalHealthStatus::Failed);
+        assert_eq!(
+            profile.health.message.as_deref(),
+            Some("object-storage running state is missing process handle")
+        );
+    }
+
+    #[test]
+    fn object_storage_manager_failed_constructor_profiles_error() {
+        let manager = ObjectStorageManager::failed(
+            ObjectStorageConfig::default(),
+            "invalid object-storage config".to_string(),
+        );
+
+        let profile = manager.profile();
+
+        assert_eq!(profile.health.status, LocalHealthStatus::Failed);
+        assert_eq!(
+            profile.health.message.as_deref(),
+            Some("invalid object-storage config")
+        );
+    }
+
+    #[test]
+    fn object_storage_manager_profiles_starting_state() {
+        let manager = ObjectStorageManager::from_config(ObjectStorageConfig::default());
+        manager.set_phase_for_test(ObjectStorageManagerPhase::Starting);
+
+        let profile = manager.profile();
+
+        assert_eq!(profile.health.status, LocalHealthStatus::Starting);
+        assert_eq!(profile.health.message.as_deref(), Some("starting"));
+    }
+
+    impl ObjectStorageManager {
+        fn set_phase_for_test(&self, phase: ObjectStorageManagerPhase) {
+            self.inner.state.lock().unwrap().phase = phase;
+        }
+    }
+
     struct FakeResolver;
 
     impl MinioBinaryResolver for FakeResolver {
@@ -652,6 +1153,20 @@ mod tests {
             _config: &'a ObjectStorageConfig,
         ) -> Pin<Box<dyn Future<Output = SandboxResult<()>> + Send + 'a>> {
             Box::pin(async { Err(SandboxError::provider("health failed")) })
+        }
+    }
+
+    struct SlowProbe;
+
+    impl ObjectStorageHealthProbe for SlowProbe {
+        fn wait_until_ready<'a>(
+            &'a self,
+            _config: &'a ObjectStorageConfig,
+        ) -> Pin<Box<dyn Future<Output = SandboxResult<()>> + Send + 'a>> {
+            Box::pin(async {
+                tokio::task::yield_now().await;
+                Ok(())
+            })
         }
     }
 }

@@ -190,7 +190,7 @@ Review:
 
 ### PER 3C — S3 service compatibility
 
-Status: in progress — 3C.1 minimal S3 substrate/profile implemented
+Status: in progress — 3C.2 daemon-owned MinIO manager implemented
 
 Prepare:
 
@@ -202,11 +202,15 @@ Execute:
 
 - 3C.1 adds product-neutral MinIO object-storage profile facts: host and guest API endpoints, credentials, region, path-style addressing, logs, and a bounded operation support matrix.
 - 3C.1 adds fakeable MinIO binary/process/health seams and deterministic lifecycle tests that do not require a real MinIO binary.
-- Real AWS SDK subset tests, browser/CORS support, versioning support, and v0-specific bucket/key policy remain out of scope for 3C.1.
+- 3C.2 moves MinIO lifecycle ownership into the daemon: boot starts object storage, `GET /profile` reports not started/starting/ready/failed/stopped state, and graceful daemon shutdown stops the running service handle.
+- 3C.2 adds product-neutral object-storage env config for binary, data dir, API host/port, console port, region, credentials, guest host, and log path.
+- 3C.2 keeps default tests on fakeable seams and adds an ignored real-MinIO host lifecycle contract test; AWS SDK host contract coverage remains a follow-up to avoid adding heavy SDK dependencies before the service boundary is stable.
+- Browser/CORS support, versioning support, guest presigned probing, v0-specific buckets/keys, and Postgres/KV remain out of scope for 3C.2.
 
 Review:
 
 - v0 should be able to delete MinIO lifecycle and local S3 env wiring while keeping product bucket/key semantics.
+- If daemon boot cannot start MinIO, the daemon still serves a failed object-storage health profile rather than failing the whole daemon.
 
 ### PER 3D — Postgres profile / KV decision
 

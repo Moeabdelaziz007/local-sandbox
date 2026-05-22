@@ -12,27 +12,83 @@ use local_sandbox_core::{
     ExtendSandboxTimeoutRequest, InMemorySandboxProvider, LocalCredentials, LocalDaemonProfile,
     LocalEndpoint, LocalEndpointProtocol, LocalEndpointPurpose, LocalEndpointVisibility,
     LocalHealth, LocalHealthStatus, LocalProfile, LocalSandboxProfile, LocalServiceProfile,
-    SandboxError, SandboxErrorCode, SandboxId, SandboxProvider, SetNetworkPolicyRequest,
-    WriteFilesRequest,
+    SandboxError, SandboxErrorCode, SandboxId, SandboxProvider, SandboxResult,
+    SetNetworkPolicyRequest, WriteFilesRequest,
 };
-use local_sandbox_services::{object_storage_profile, ObjectStorageConfig};
+use local_sandbox_services::{ObjectStorageConfig, ObjectStorageManager};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc};
+
+/// Build daemon state for the production daemon process.
+pub async fn boot_state() -> SandboxResult<DaemonState> {
+    let object_storage = ObjectStorageConfig::from_env().map_or_else(
+        |error| {
+            tracing::warn!(error = %error, "invalid object-storage configuration; daemon will keep serving profile");
+            ObjectStorageManager::failed(ObjectStorageConfig::default(), error.to_string())
+        },
+        ObjectStorageManager::from_config,
+    );
+    if let Err(error) = object_storage.start().await {
+        tracing::warn!(error = %error, "object storage failed to start; daemon will keep serving profile");
+    }
+
+    Ok(DaemonState::with_object_storage(
+        InMemorySandboxProvider::new(),
+        object_storage,
+    ))
+}
+
+/// Serve the daemon until the shutdown future resolves, then stop owned services.
+pub async fn serve_with_shutdown<F>(
+    listener: tokio::net::TcpListener,
+    state: DaemonState,
+    shutdown: F,
+) -> std::io::Result<()>
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    let object_storage = state.object_storage_manager();
+    let result = axum::serve(listener, router_with_state(state))
+        .with_graceful_shutdown(shutdown)
+        .await;
+
+    if let Err(error) = object_storage.shutdown() {
+        tracing::warn!(error = %error, "object storage shutdown failed");
+    }
+
+    result
+}
 
 /// Shared daemon application state.
 #[derive(Clone)]
 pub struct DaemonState {
     provider: Arc<dyn SandboxProvider>,
     profile_source: Arc<dyn ServiceProfileSource>,
+    object_storage: ObjectStorageManager,
 }
 
 impl DaemonState {
     /// Create daemon state from a sandbox provider.
     #[must_use]
     pub fn new(provider: impl SandboxProvider) -> Self {
+        let object_storage = ObjectStorageManager::from_config(ObjectStorageConfig::default());
         Self {
             provider: Arc::new(provider),
-            profile_source: Arc::new(DefaultServiceProfileSource::default()),
+            profile_source: Arc::new(DefaultServiceProfileSource::new(object_storage.clone())),
+            object_storage,
+        }
+    }
+
+    /// Create daemon state with the daemon-owned object-storage manager.
+    #[must_use]
+    pub fn with_object_storage(
+        provider: impl SandboxProvider,
+        object_storage: ObjectStorageManager,
+    ) -> Self {
+        Self {
+            provider: Arc::new(provider),
+            profile_source: Arc::new(DefaultServiceProfileSource::new(object_storage.clone())),
+            object_storage,
         }
     }
 
@@ -44,6 +100,12 @@ impl DaemonState {
     ) -> Self {
         self.profile_source = Arc::new(profile_source);
         self
+    }
+
+    /// Return the daemon-owned object-storage manager.
+    #[must_use]
+    pub fn object_storage_manager(&self) -> ObjectStorageManager {
+        self.object_storage.clone()
     }
 
     async fn profile(&self) -> Result<LocalProfile, SandboxError> {
@@ -61,18 +123,20 @@ pub trait ServiceProfileSource: Send + Sync {
     fn services(&self) -> BTreeMap<String, LocalServiceProfile>;
 }
 
-#[derive(Default)]
 struct DefaultServiceProfileSource {
-    object_storage: ObjectStorageConfig,
+    object_storage: ObjectStorageManager,
+}
+
+impl DefaultServiceProfileSource {
+    fn new(object_storage: ObjectStorageManager) -> Self {
+        Self { object_storage }
+    }
 }
 
 impl ServiceProfileSource for DefaultServiceProfileSource {
     fn services(&self) -> BTreeMap<String, LocalServiceProfile> {
         let mut services = default_unknown_services();
-        services.insert(
-            "object_storage".to_string(),
-            object_storage_profile(&self.object_storage),
-        );
+        services.insert("object_storage".to_string(), self.object_storage.profile());
         services
     }
 }
@@ -413,8 +477,13 @@ mod tests {
         CommandInfo, SandboxCapabilities, SandboxInfo, SandboxStatus, SnapshotInfo,
         WriteFilesResponse,
     };
+    use local_sandbox_services::{
+        MinioBinaryResolver, MinioProcessHandle, MinioProcessRunner, ObjectStorageHealthProbe,
+        ObjectStorageService,
+    };
     use serde::de::DeserializeOwned;
     use serde_json::{json, Value};
+    use std::{future::Future, path::Path, path::PathBuf, pin::Pin, time::Duration};
     use tower::ServiceExt;
 
     const RESPONSE_BODY_LIMIT: usize = 1024 * 1024;
@@ -545,6 +614,58 @@ mod tests {
             Some("http://127.0.0.1:19000")
         );
         assert!(!profile.services.contains_key("database"));
+    }
+
+    #[tokio::test]
+    async fn profile_route_reflects_daemon_owned_object_storage_manager_state() {
+        let config = ObjectStorageConfig {
+            data_dir: std::env::temp_dir().join(format!(
+                "local-sandbox-daemon-manager-fail-test-{}",
+                std::process::id()
+            )),
+            minio_binary: Some(PathBuf::from("/fake/minio")),
+            api_port: 19_000,
+            readiness_timeout: Duration::from_millis(1),
+            guest_endpoint_host: "guest.local".to_string(),
+            ..ObjectStorageConfig::default()
+        };
+        let service = ObjectStorageService::with_components(
+            config.clone(),
+            Arc::new(FakeResolver),
+            Arc::new(FakeRunner),
+            Arc::new(FailingProbe),
+        );
+        let object_storage = ObjectStorageManager::new(service);
+        let state = DaemonState::with_object_storage(
+            InMemorySandboxProvider::new(),
+            object_storage.clone(),
+        );
+        let app = router_with_state(state);
+
+        let result = object_storage.start().await;
+        assert!(result.is_err());
+
+        let response = app.oneshot(request("GET", "/profile", None)).await.unwrap();
+
+        let profile = json_body::<LocalProfile>(response).await;
+        let object_storage_profile = profile.services.get("object_storage").unwrap();
+        assert_eq!(
+            object_storage_profile.health.status,
+            LocalHealthStatus::Failed
+        );
+        assert_eq!(
+            object_storage_profile.health.message.as_deref(),
+            Some("provider error: minio unavailable")
+        );
+        assert!(object_storage_profile.endpoints.iter().any(|endpoint| {
+            endpoint.visibility == LocalEndpointVisibility::Host
+                && endpoint.url.as_deref() == Some("http://127.0.0.1:19000")
+        }));
+        assert!(object_storage_profile.endpoints.iter().any(|endpoint| {
+            endpoint.visibility == LocalEndpointVisibility::Guest
+                && endpoint.url.as_deref() == Some("http://guest.local:19000")
+        }));
+        let _ = std::fs::remove_dir_all(config.data_dir);
     }
 
     #[tokio::test]
@@ -732,5 +853,43 @@ mod tests {
             .await
             .unwrap();
         serde_json::from_slice(&bytes).unwrap()
+    }
+
+    struct FakeResolver;
+
+    impl MinioBinaryResolver for FakeResolver {
+        fn resolve(&self, config: &ObjectStorageConfig) -> SandboxResult<PathBuf> {
+            Ok(config.minio_binary.clone().unwrap())
+        }
+    }
+
+    struct FakeRunner;
+
+    impl MinioProcessRunner for FakeRunner {
+        fn start(
+            &self,
+            _config: &ObjectStorageConfig,
+            binary: &Path,
+        ) -> SandboxResult<MinioProcessHandle> {
+            assert_eq!(binary, Path::new("/fake/minio"));
+            Ok(MinioProcessHandle {
+                id: "fake-minio".to_string(),
+            })
+        }
+
+        fn stop(&self, _handle: &MinioProcessHandle) -> SandboxResult<()> {
+            Ok(())
+        }
+    }
+
+    struct FailingProbe;
+
+    impl ObjectStorageHealthProbe for FailingProbe {
+        fn wait_until_ready<'a>(
+            &'a self,
+            _config: &'a ObjectStorageConfig,
+        ) -> Pin<Box<dyn Future<Output = SandboxResult<()>> + Send + 'a>> {
+            Box::pin(async { Err(SandboxError::provider("minio unavailable")) })
+        }
     }
 }
