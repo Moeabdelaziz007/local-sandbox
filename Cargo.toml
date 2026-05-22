@@ -29,9 +29,21 @@ missing_panics_doc = "allow"
 
 [workspace.dependencies]
 anyhow = "1.0.98"
+aws-smithy-async = "=1.2.11"
+aws-smithy-checksums = "=0.64.3"
+aws-smithy-eventstream = "=0.60.18"
+aws-smithy-http = "=0.63.3"
+aws-smithy-http-client = "=1.1.9"
+aws-smithy-json = "=0.62.3"
+aws-smithy-observability = "=0.2.4"
+aws-smithy-runtime = "=1.10.0"
+aws-smithy-runtime-api = "=1.11.3"
+aws-smithy-types = "=1.4.3"
+aws-smithy-xml = "=0.60.13"
 axum = "0.8.4"
 base64 = "0.22.1"
 clap = { version = "4.5.38", features = ["derive", "env"] }
+crc-fast = "=1.9.0"
 ratatui = "0.29.0"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"

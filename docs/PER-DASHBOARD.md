@@ -4,14 +4,16 @@ This dashboard tracks the extraction of v0 local sandbox substrate into `vercel-
 
 ## North Star
 
-Build a robust Rust substrate that owns local VM/service/runtime mechanics while v0 keeps product-specific chat/block/project integration.
+Build a self-contained Rust local-development infrastructure server that owns local VM/service/runtime mechanics while v0 keeps product-specific chat/block/project integration.
+
+`local-sandbox` should not require developers to assemble local infrastructure from external services before it can provide the compatibility surfaces v0 needs. The daemon should own lifecycle, readiness, profile facts, diagnostics, and default local implementations. External binaries are acceptable only as explicit parity/reference backends or when embedding would distort the product-neutral contract.
 
 ## Boundary
 
 ### In this repository
 
 - vfkit VM lifecycle
-- local S3-compatible storage
+- embedded S3-compatible storage
 - local Postgres orchestration
 - local process/service health
 - sandbox file IO and command execution
@@ -190,13 +192,14 @@ Review:
 
 ### PER 3C — S3 service compatibility
 
-Status: in progress — 3C.2 daemon-owned MinIO manager implemented
+Status: in progress — 3C.4 embedded object-storage backend planned
 
 Prepare:
 
 - Define the S3-compatible operation subset v0 actually uses.
 - Decide whether `PutBucketCors` and `ListObjectVersions` are supported locally or explicitly unsupported.
-- Prove guest-visible MinIO endpoint behavior before relying on presigned URLs from guest VMs.
+- Prove guest-visible object-storage endpoint behavior before relying on presigned URLs from guest VMs.
+- Reframe `MinIO` as the initial backend, not the product boundary: `local-sandbox` should provide object storage by default without external installation.
 
 Execute:
 
@@ -204,33 +207,72 @@ Execute:
 - 3C.1 adds fakeable MinIO binary/process/health seams and deterministic lifecycle tests that do not require a real MinIO binary.
 - 3C.2 moves MinIO lifecycle ownership into the daemon: boot starts object storage, `GET /profile` reports not started/starting/ready/failed/stopped state, and graceful daemon shutdown stops the running service handle.
 - 3C.2 adds product-neutral object-storage env config for binary, data dir, API host/port, console port, region, credentials, guest host, and log path.
-- 3C.2 keeps default tests on fakeable seams and adds an ignored real-MinIO host lifecycle contract test; AWS SDK host contract coverage remains a follow-up to avoid adding heavy SDK dependencies before the service boundary is stable.
-- Browser/CORS support, versioning support, guest presigned probing, v0-specific buckets/keys, and Postgres/KV remain out of scope for 3C.2.
+- 3C.2 keeps default tests on fakeable seams and adds an ignored real-MinIO host lifecycle contract test.
+- 3C.3 adds an ignored/env-gated real-MinIO daemon integration test that reads `GET /profile`, builds an AWS SDK S3 client from the daemon-owned object-storage endpoint, credentials, region, and path-style profile facts, then validates create bucket, put/get exact bytes, head, list, copy, delete object(s), presigned GET, and presigned PUT.
+- 3C.4 should replace MinIO as the default object-storage runtime with an embedded Rust S3-compatible backend, likely `s3s` plus `s3s-fs`, so normal local development and CI do not require a `MinIO` binary.
+- 3C.4 should keep the AWS SDK profile-derived contract as the compatibility truth: daemon starts object storage, `GET /profile` returns endpoint/credential/region/path-style facts, and a profile-derived SDK client validates the advertised host operation subset.
+- 3C.4 should demote MinIO to an optional parity/reference backend unless a concrete compatibility gap requires it as the default.
+- Browser/CORS support, versioning support, guest presigned probing, v0-specific buckets/keys, and Postgres/KV remain out of scope for 3C.4.
 
 Review:
 
 - v0 should be able to delete MinIO lifecycle and local S3 env wiring while keeping product bucket/key semantics.
-- If daemon boot cannot start MinIO, the daemon still serves a failed object-storage health profile rather than failing the whole daemon.
+- If daemon boot cannot start object storage, the daemon still serves a failed object-storage health profile rather than failing the whole daemon.
+- Host-side S3 compatibility now has ignored real-MinIO contract coverage through daemon profile facts; the contract still needs to be run in an environment with a `MinIO` binary before using it as proof for v0 deletion work.
+- Guest-visible and browser-visible object-storage flows still need dedicated route/URL compatibility work.
+- The success bar is now higher than MinIO lifecycle ownership: a fresh checkout should be able to run the daemon and get working local object storage without installing an external S3 service.
 
-### PER 3D — Postgres profile / KV decision
+### PER 3C.4 — embedded object-storage backend
+
+Status: planned
+
+Prepare:
+
+- Evaluate `s3s`/`s3s-fs` as the default embedded S3-compatible backend for the bounded object-storage capability matrix.
+- Identify whether the existing profile-derived AWS SDK host contract passes against the embedded backend, including presigned GET/PUT.
+- Define a backend abstraction that keeps profile facts product-neutral and avoids naming the service after MinIO.
+- Decide whether MinIO remains as an optional parity/reference backend or is removed from default daemon boot entirely.
+
+Execute:
+
+- Introduce an object-storage backend trait or equivalent seam below `ObjectStorageManager`.
+- Implement the default embedded backend as a daemon-owned Tokio task rather than an external process.
+- Rename MinIO-specific config/process/health concepts where they are no longer the product boundary.
+- Convert the S3 host contract to run in normal CI against the embedded backend.
+- Keep the MinIO contract ignored/env-gated if it remains useful for parity.
+
+Review:
+
+- A fresh checkout can run `local-sandbox-daemon` and expose object storage without installing MinIO.
+- The profile-derived AWS SDK contract passes in normal CI for the advertised host S3 subset.
+- The capability matrix stays honest about unsupported CORS, browser upload, versioning, guest presigned, and public object-storage flows.
+- v0 deletion work should target local object-storage lifecycle/env wiring, not MinIO-specific code paths.
+
+### PER 3D — embedded Postgres / KV decision
 
 Status: planned
 
 Prepare:
 
 - Define PGlite/Postgres lifecycle and profile requirements.
-- Inventory `PgLocalKV` method coverage and gaps before deciding whether any KV compatibility belongs here.
+- Prove current v0 PGlite usage, connection concurrency, and bootstrap expectations.
+- Evaluate `pglite-oxide` on latest stable Rust as the default embedded Postgres-compatible backend.
+- Inventory `PgLocalKV` method coverage and Redis/Upstash semantics before deciding whether KV compatibility belongs here.
+- Decide whether KV remains v0-owned, moves as a product-neutral Redis-subset helper, or is exposed as a Redis-compatible local endpoint.
 
 Execute:
 
-- Implement Postgres lifecycle/profile/readiness support first.
-- Keep `PgLocalKV` in v0 unless a product-neutral KV contract is proven.
+- Bump the workspace to latest stable Rust if the chosen embedded backend requires it.
+- Implement Postgres lifecycle/profile/readiness support with an embedded/default backend.
+- Add profile-derived Postgres contract coverage using normal Postgres clients.
+- Move KV only if recon proves a product-neutral compatibility boundary and the v0 diff improves.
 
 Review:
 
 - v0 should consume a Postgres profile while retaining chat DB schema, migrations, and product KV policy.
+- A fresh checkout should not require a separately installed Postgres service for local development.
 
-### PER 3E — routes and URL compatibility
+### PER 3E — embedded routes / proxy / HTTPS compatibility
 
 Status: planned
 
@@ -238,15 +280,19 @@ Prepare:
 
 - Trace sandbox route URL, preview iframe, log proxy websocket, lifecycle callback, S3 public endpoint, and guest endpoint flows.
 - Decide which URL facts belong in local profile and which remain product routing/auth semantics.
+- Compare current local route/proxy behavior with `locald`'s Rust proxy/TLS architecture: `rcgen`, `rustls`, SNI-based leaf certificates, and explicit trust setup.
 
 Execute:
 
 - Extend route/profile contracts with the endpoint facts proven necessary.
 - Add compatibility tests for route URL helpers and local `subdomain` bridge behavior.
+- Implement daemon-owned HTTP/websocket/callback proxying where v0 currently carries local URL rewrites.
+- Add a TLS generation/trust plan before relying on browser HTTPS flows.
 
 Review:
 
 - v0 should stop composing production URL shapes from local `subdomain` values except through explicit compatibility helpers.
+- HTTPS support should not require `mkcert`, `openssl`, or hidden trust-store mutation.
 
 ### PER 3F — v0 integration probe
 
@@ -312,3 +358,5 @@ Review:
 - 2026-05-21: PER 3A affirmed interface compatibility as the service-boundary strategy: `local-sandbox` owns local lifecycle/profile/readiness facts while v0 owns product bucket/key/KV schemas and routing/auth policy.
 - 2026-05-21: Local profile contracts must distinguish host-visible, guest-visible, browser-visible, websocket, callback, and public object-storage endpoints. A single URL per service is not enough.
 - 2026-05-21: `PgLocalKV` does not move into `local-sandbox` until a product-neutral KV contract is proven; Postgres lifecycle/profile moves first.
+- 2026-05-22: Sharpened the north star from extracted substrate to self-contained local-development infrastructure server. Default local services should be embedded when viable; external binaries such as MinIO are implementation strategies or parity backends, not the product boundary.
+- 2026-05-22: Latest stable Rust is acceptable for this project when it unlocks better embedded local infrastructure; MSRV should not block adopting a backend such as `pglite-oxide` if it proves to fit v0's Postgres expectations.

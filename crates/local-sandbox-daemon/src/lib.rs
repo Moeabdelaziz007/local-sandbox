@@ -21,13 +21,23 @@ use std::{collections::BTreeMap, sync::Arc};
 
 /// Build daemon state for the production daemon process.
 pub async fn boot_state() -> SandboxResult<DaemonState> {
-    let object_storage = ObjectStorageConfig::from_env().map_or_else(
-        |error| {
+    match ObjectStorageConfig::from_env() {
+        Ok(config) => boot_state_with_object_storage_config(config).await,
+        Err(error) => {
             tracing::warn!(error = %error, "invalid object-storage configuration; daemon will keep serving profile");
-            ObjectStorageManager::failed(ObjectStorageConfig::default(), error.to_string())
-        },
-        ObjectStorageManager::from_config,
-    );
+            Ok(DaemonState::with_object_storage(
+                InMemorySandboxProvider::new(),
+                ObjectStorageManager::failed(ObjectStorageConfig::default(), error.to_string()),
+            ))
+        }
+    }
+}
+
+/// Build daemon state with an explicit object-storage config.
+pub async fn boot_state_with_object_storage_config(
+    config: ObjectStorageConfig,
+) -> SandboxResult<DaemonState> {
+    let object_storage = ObjectStorageManager::from_config(config);
     if let Err(error) = object_storage.start().await {
         tracing::warn!(error = %error, "object storage failed to start; daemon will keep serving profile");
     }
