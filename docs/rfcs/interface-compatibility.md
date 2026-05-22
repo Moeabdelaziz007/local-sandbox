@@ -1,6 +1,6 @@
 # RFC: Interface Compatibility as the Local Sandbox Boundary
 
-Status: draft  
+Status: historical draft; superseded for service-ownership planning by `self-contained-infrastructure.md` and `PER-DASHBOARD.md`  
 Date: 2026-05-21
 
 ## Summary
@@ -10,6 +10,8 @@ Date: 2026-05-21
 The goal is not full compatibility with every upstream product. The goal is compatibility with v0's actual expectations at the seams it already uses: sandbox runtime, S3-compatible storage, Postgres/KV support, route URLs, and local service discovery.
 
 This keeps product semantics in v0 while moving local substrate mechanics into this repository.
+
+Update, 2026-05-22: later PER 3D planning sharpened the boundary from code ownership to service ownership. `local-sandbox` owns the local service surfaces v0 needs to boot in dev mode; v0 owns product schema, migrations, key names, and product policy. The Postgres/KV details in this draft should be read as historical pre-reframe notes.
 
 ## Motivation
 
@@ -49,13 +51,13 @@ A local interface is compatible when:
 
 ## Initial interface map
 
-| Interface | v0 expectation | Local-sandbox target | Likely v0 movement |
-| --- | --- | --- | --- |
-| Sandbox runtime | `@vercel/sandbox`-style create/get/routes/commands/files/timeout/network/snapshot | Sandbox-compatible TypeScript client over the daemon | Select local client in local mode |
-| S3-compatible storage | S3 clients for git bundles, commit backups, and local object storage | Local S3 service lifecycle plus endpoint/bucket/credential/profile helpers | Centralize S3 client creation and URL selection |
-| Postgres / KV | PGlite local service plus Redis-shaped KV adapter for v0 state | Postgres service lifecycle, readiness, and bootstrap; maybe a KV-compatible helper if recon proves it is product-neutral | Centralize local DB URL and bootstrap; keep product KV schema in v0 unless proven generic |
-| Routes and URLs | localhost routes, preview URLs, guest/public endpoint distinctions | Route registry/profile helpers that expose host URLs and guest-visible URLs | Move URL construction behind small helpers |
-| Logs and diagnostics | local CLI/status joins process, VM, route, service, cache, and KV state | Substrate read model for services, sandboxes, routes, snapshots, and health | Keep product-specific joins in v0 or optional adapters |
+| Interface             | v0 expectation                                                                    | Local-sandbox target                                                                                           | Likely v0 movement                                                                        |
+| --------------------- | --------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| Sandbox runtime       | `@vercel/sandbox`-style create/get/routes/commands/files/timeout/network/snapshot | Sandbox-compatible TypeScript client over the daemon                                                           | Select local client in local mode                                                         |
+| S3-compatible storage | S3 clients for git bundles, commit backups, and local object storage              | Local S3 service lifecycle plus endpoint/bucket/credential/profile helpers                                     | Centralize S3 client creation and URL selection                                           |
+| Postgres / KV         | PGlite local service plus Redis-shaped KV behavior for v0 state                   | Daemon-owned Postgres lifecycle/profile and a local KV/Redis-compatible service surface if v0 needs it to boot | Centralize local DB and KV service selection; keep product schema, keys, and policy in v0 |
+| Routes and URLs       | localhost routes, preview URLs, guest/public endpoint distinctions                | Route registry/profile helpers that expose host URLs and guest-visible URLs                                    | Move URL construction behind small helpers                                                |
+| Logs and diagnostics  | local CLI/status joins process, VM, route, service, cache, and KV state           | Substrate read model for services, sandboxes, routes, snapshots, and health                                    | Keep product-specific joins in v0 or optional adapters                                    |
 
 ## Sandbox runtime details
 
@@ -104,14 +106,14 @@ Recon should answer:
 
 - Which v0 code talks to PGlite directly?
 - Which code expects Redis/Upstash-shaped KV behavior?
-- Is the local `PgLocalKV` adapter product-specific or a reusable compatibility shim?
+- Which local KV/Redis-compatible service surface does v0 need to boot without carrying local service code?
 - What schema/bootstrap does local mode require?
 - Which readiness checks and stale-state cleanup are substrate facts vs v0 warm-pool policy?
 
 Initial guess:
 
 - `local-sandbox` owns Postgres/PGlite lifecycle, health, logs, and connection profile.
-- v0 owns the Redis-shaped KV schema unless recon proves the shim is generic enough to move.
+- `local-sandbox` should own the local KV/Redis-compatible service surface if v0 needs it to boot; v0 owns Redis-shaped key schemas and product policy.
 - Bootstrap helpers may live in `local-sandbox` if they are only service readiness/schema setup and contain no chat/block/project concepts.
 
 Open question: whether to expose a Postgres-compatible service only, or also a KV-compatible API.
@@ -215,7 +217,7 @@ Produce:
 - KV method inventory
 - schema/bootstrap inventory
 - readiness/stale cleanup split
-- recommendation: Postgres-only vs KV-compatible helper
+- recommendation: Postgres-only vs daemon-owned KV-compatible local service
 
 Likely v0 areas:
 
@@ -258,9 +260,9 @@ Add a product-neutral profile shape to the daemon/client that can expose service
 
 Implement local S3 lifecycle/config/profile support and contract tests.
 
-### PER 3D: Postgres/KV decision
+### PER 3D: Postgres/KV service ownership
 
-Implement Postgres service profile first. Move KV compatibility only if recon shows it is substrate-generic.
+Implement Postgres service profile first. Treat KV as a daemon-owned local service surface if v0 needs Redis/Upstash semantics to boot, while keeping product key schemas and policy in v0.
 
 ### PER 3E: v0 integration spike
 

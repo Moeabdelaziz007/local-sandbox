@@ -142,7 +142,8 @@ Candidate default:
 
 - `pglite-oxide` is the best architectural fit if its current release satisfies v0's Postgres expectations.
 - It exposes a normal local Postgres URL through `PgliteServer` and supports standard clients like SQLx and `tokio-postgres`.
-- Latest `pglite-oxide` currently requires a newer stable Rust than this repo uses. That is acceptable if the backend proves out.
+- The workspace now tracks the latest stable Rust, so `pglite-oxide`'s Rust 1.92+ requirement is no longer the blocker.
+- PER 3D.1 found that `pglite-oxide 0.5.0` does not yet satisfy the daemon default bar in this repo: it conflicts with the current embedded S3 dependency graph, a no-user URL does not match v0's current `PG_LOCAL_URL` shape, `max_size=2` pooled clients hang/fail, and shutdown after pool scenarios is not consistently clean.
 
 Fallback:
 
@@ -165,7 +166,8 @@ Current v0 state:
 - Local mode swaps exported Redis clients to a `PgLocalKV` instance.
 - `PgLocalKV` is not a Redis wire server. It is a TypeScript compatibility shim backed by local Postgres/PGlite.
 - It implements a meaningful Redis-like subset: strings, hashes, lists, sets, counters, scan, pipeline subset, sorted-set-ish counters, and the Lua subset needed by `@upstash/lock`.
-- Current evidence did not find live `rpush` or `ltrim` usage, but v0 does use list semantics such as `lpush`, `llen`, `lrange`, `lrem`, and `rpop`.
+- Current PER 3D.1 evidence includes live `rpush` and `ltrim` usage in v0, in addition to list semantics such as `lpush`, `llen`, `lrange`, `lrem`, and `rpop`.
+- `PgLocalKV` has a current method gap against that live surface. That argues against porting the existing shim verbatim, not against `local-sandbox` owning a local KV/Redis-compatible service.
 
 Interpretation:
 
@@ -175,7 +177,7 @@ Interpretation:
 
 Options:
 
-1. Keep KV in v0 and only provide embedded Postgres.
+1. Keep only product KV policy in v0 if the inventory proves no daemon-owned KV service surface is needed.
 2. Move a product-neutral Redis-subset compatibility helper into `local-sandbox`, backed by embedded Postgres/PGlite.
 3. Provide an embedded Redis-compatible server or RESP endpoint for the subset v0 uses.
 4. Use an embedded key-value engine only if v0 can consume a product-neutral local KV API without increasing bespoke local-mode code.
@@ -262,22 +264,41 @@ Success:
 - profile-derived AWS SDK contract passes in normal CI
 - MinIO is optional parity/reference only
 
-### PER 3D: Embedded Postgres and KV decision
+### PER 3D: Embedded Postgres and KV service ownership
 
-This should be reframed from “Postgres profile / KV decision” to “embedded Postgres and KV compatibility decision.”
+PER 3D is an umbrella for daemon-owned local Postgres and KV-compatible services. The boundary is service ownership, not code provenance: `local-sandbox` should provide the local service surfaces v0 needs to boot, while v0 keeps product schema, migrations, key names, and product policy.
 
-Prepare should prove:
+PER 3D.0 result:
 
-- current v0 PGlite usage and concurrency needs
-- whether `pglite-oxide` satisfies those needs
-- whether the repo should bump to latest stable Rust to adopt it
-- whether KV remains v0-owned, becomes a `local-sandbox` Redis-subset helper, or becomes a Redis-compatible local endpoint
+- Reframed the sequence from “does KV move out of v0?” to “which daemon-owned service surface does v0 need?”
+- Preserved the `pglite-oxide` spike as evidence without treating it as a final verdict against embedded Postgres.
+- Split the follow-up into Postgres dependency/service-shape tracks and KV surface/backend tracks.
+
+PER 3D.PG sequence:
+
+1. **PG-1: Postgres dependency unblock** — determine whether `pglite-oxide` can coexist with embedded S3 in the same Rust dependency graph, whether a small patch/fork is acceptable, or whether `postgresql_embedded` should become the default candidate.
+2. **PG-2: Postgres service-shape proof** — prove a daemon-owned Postgres profile contract, including explicit username URL, host/guest endpoints, database name, credentials, backend, data dir, and connection guidance. Test realistic pooled-client behavior and shutdown.
+3. **PG-3: daemon-owned Postgres manager** — implement lifecycle, readiness, profile facts, diagnostics, shutdown, and profile-derived Postgres contract tests once the backend path is chosen.
+
+PER 3D.KV sequence:
+
+1. **KV-1: Redis/Upstash surface inventory** — inventory live v0 Redis/Upstash commands, pipeline/Lua/lock behavior, list/queue semantics, expiry, and atomicity assumptions. Compare with the current `PgLocalKV` shim.
+2. **KV-2: KV backend bakeoff** — compare embedded Redis-compatible/RESP server, daemon-owned Redis-subset service, and Postgres-backed compatibility helper options against the live command matrix and v0 deletion pressure.
+3. **KV-3: daemon-owned KV service** — implement lifecycle, readiness, profile facts, and contract tests for the chosen Redis/Upstash-compatible service surface.
+
+PER 3D.1 result:
+
+- The workspace now tracks latest stable Rust, so `pglite-oxide`'s Rust 1.92+ requirement is not the blocker.
+- `pglite-oxide 0.5.0` should not be adopted into the daemon yet because unresolved integration questions remain: dependency conflict with current embedded S3 `sha2` requirements, explicit username URL shape, pooled-client behavior, and shutdown behavior.
+- Proposed Postgres profile fields, if a backend later proves viable: service key `postgres`, host and guest `database` endpoints with `postgres` protocol URLs, explicit `username`, optional `password`, `database`, `backend`, `data_dir`, `max_client_connections`, and a boolean/enum that states whether downstream pools must be constrained to one connection.
+- KV remains part of the self-contained infrastructure goal. The next KV step should inventory the complete live Redis/Upstash method surface and compare a daemon-owned Redis-compatible endpoint with a Postgres-backed compatibility helper.
 
 Success:
 
 - daemon can expose a Postgres profile backed by an embedded/default implementation
 - v0 can centralize `PG_LOCAL_URL` selection around the local profile
-- KV ownership is decided with evidence from actual v0 usage
+- daemon can expose a local KV/Redis-compatible service surface if v0 needs it to boot
+- product schemas, keys, migrations, and policy stay in v0
 
 ### PER 3E: Embedded route/proxy and HTTPS strategy
 
@@ -293,7 +314,7 @@ Success:
 
 ### PER 3F: v0 integration probe
 
-Only after embedded S3 and the Postgres/KV decision have enough shape, run the deletion-pressure v0 spike.
+Only after embedded S3 and the Postgres/KV service tracks have enough shape, run the deletion-pressure v0 spike.
 
 Success:
 
@@ -337,7 +358,7 @@ Proceed in this order:
 
 1. Finish PR 8 as S3 profile contract coverage and planning documentation.
 2. PER 3C.4: make object storage embedded by default with `s3s`/`s3s-fs`.
-3. PER 3D: evaluate `pglite-oxide` on latest stable Rust and decide KV compatibility ownership with actual v0 usage in hand.
+3. PER 3D: continue the explicit PG dependency/service-shape sequence and KV Redis/Upstash surface/backend sequence.
 4. PER 3E: move route/proxy/TLS planning toward the daemon, borrowing from `locald` where appropriate.
 5. PER 3F: run the v0 deletion-pressure integration spike.
 

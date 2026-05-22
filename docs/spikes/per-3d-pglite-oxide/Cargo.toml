@@ -1,0 +1,21 @@
+[workspace]
+
+[package]
+name = "per-3d-pglite-oxide"
+version = "0.0.0"
+edition = "2021"
+publish = false
+rust-version = "1.95"
+
+[dependencies]
+anyhow = "1.0.98"
+deadpool-postgres = "0.14.1"
+pglite-oxide = "0.5.0"
+tokio = { version = "1.45.1", features = [
+  "macros",
+  "net",
+  "process",
+  "rt-multi-thread",
+  "time",
+] }
+tokio-postgres = "0.7.17"

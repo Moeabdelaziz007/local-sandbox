@@ -160,7 +160,7 @@ Prepare:
 Execute:
 
 - Confirmed S3 is a profile plus bounded operations subset: MinIO lifecycle, endpoint facts, credentials, bucket bootstrap, and health belong in `local-sandbox`; product bucket/key semantics stay in v0.
-- Confirmed Postgres lifecycle/profile belongs in `local-sandbox`, while chat DB schema, migrations, `kv_store` key schemas, and the Redis-shaped `PgLocalKV` shim stay in v0 until proven product-neutral.
+- Confirmed Postgres lifecycle/profile belongs in `local-sandbox`, while chat DB schema, migrations, `kv_store` key schemas, and KV product policy stay in v0. The Redis-shaped `PgLocalKV` shim is evidence about the local service surface, not the boundary to preserve.
 - Identified routes/URLs as the highest-risk compatibility surface: host-visible, guest-visible, browser-visible, websocket, callback, and S3 public endpoints need explicit taxonomy.
 - Found local compatibility gaps to carry forward: guest presigned MinIO reachability is unproven, local log console URL composition appears suspect, and `PgLocalKV` lacks `rpush`/`ltrim` used by perf tracing.
 
@@ -249,29 +249,184 @@ Review:
 - v0 deletion work should target local object-storage lifecycle/env wiring, not MinIO-specific code paths.
 - MinIO can likely be removed once embedded object storage is accepted as the only compatibility target, but keeping it through this PER preserves a reference backend while the embedded backend is still new.
 
-### PER 3D — embedded Postgres / KV decision
+### PER 3D — embedded Postgres / KV service ownership
 
-Status: planned
+Status: 3D.0 reframed; 3D.1 spike complete; Postgres and KV tracks split
+
+North star:
+
+- `local-sandbox` owns the local service surfaces v0 needs to boot in dev mode.
+- v0 owns product schema, migrations, key names, and product policy that use those services.
+- PER 3D is an umbrella. It decides and implements daemon-owned local Postgres and KV-compatible services through smaller proof points, not one broad implementation pass.
 
 Prepare:
 
 - Define PGlite/Postgres lifecycle and profile requirements.
 - Prove current v0 PGlite usage, connection concurrency, and bootstrap expectations.
 - Evaluate `pglite-oxide` on latest stable Rust as the default embedded Postgres-compatible backend.
-- Inventory `PgLocalKV` method coverage and Redis/Upstash semantics before deciding whether KV compatibility belongs here.
-- Decide whether KV remains v0-owned, moves as a product-neutral Redis-subset helper, or is exposed as a Redis-compatible local endpoint.
+- Inventory live Redis/Upstash method usage before choosing a KV implementation shape.
+- Compare daemon-owned Redis-compatible endpoint, Redis-subset helper, and Postgres-backed compatibility helper options.
 
 Execute:
 
-- Bump the workspace to latest stable Rust if the chosen embedded backend requires it.
-- Implement Postgres lifecycle/profile/readiness support with an embedded/default backend.
-- Add profile-derived Postgres contract coverage using normal Postgres clients.
-- Move KV only if recon proves a product-neutral compatibility boundary and the v0 diff improves.
+- 3D.0 reframed the boundary from code ownership to service ownership: if v0 dev mode needs a local service to boot, `local-sandbox` should provide that service surface.
+- 3D.0 split the remaining work into Postgres and KV tracks so we can push through concrete proof points.
+- 3D.1 bumped the workspace to Rust 1.95 stable, removing the old 1.88 constraint. `pglite-oxide 0.5.0` only requires Rust 1.92+, so MSRV is no longer a blocker.
+- 3D.1 added an isolated executable spike at `docs/spikes/per-3d-pglite-oxide` rather than adding `pglite-oxide` to the main workspace. In the daemon graph, `pglite-oxide 0.5.0` conflicts with the existing embedded S3 dependency line because `s3s 0.13.0-alpha.3`/`0.13.0` pins `sha2 =0.11.0-rc.5` while `wasmer-types` requires stable `sha2 ^0.11.0`.
+- 3D.1 profile-derived Postgres spike findings: a v0-shaped no-user URL timed out; an explicit `postgres://postgres@127.0.0.1:<port>/postgres` URL connected with `tokio-postgres`, created a table, inserted exact rows, selected exact rows, and shut down cleanly for a single standard client.
+- 3D.1 pool findings: `deadpool-postgres` with `max_size=2` failed to open the first pooled client within 2 seconds; `max_size=1` queued the overlapping second query until the first client closed. Shutdown after pool scenarios was not consistently clean; runs observed `read frontend socket: Connection reset by peer`.
+- 3D.1 stopped before implementing a daemon manager because the spike exposed unresolved integration questions, not because embedded Postgres is out of scope. `local-sandbox` should still own the local Postgres service; the next step is to choose the implementation path deliberately.
+- KV should be treated as a local infrastructure service that `local-sandbox` ultimately owns if v0 needs it to boot locally. The PER 3D.1 evidence only says not to port the current incomplete `PgLocalKV` shim verbatim; follow-up should evaluate a complete Redis/Upstash-compatible surface, including `rpush`/`ltrim`, and compare a daemon-owned Redis-compatible endpoint against a Postgres-backed helper.
 
 Review:
 
-- v0 should consume a Postgres profile while retaining chat DB schema, migrations, and product KV policy.
-- A fresh checkout should not require a separately installed Postgres service for local development.
+- v0 should consume service profile facts while retaining chat DB schema, migrations, key names, and product KV policy.
+- A fresh checkout should not require separately installed Postgres or Redis-compatible services for local development once the relevant PER 3D tracks land.
+- Follow-up should either prove `PgliteServer` behind daemon-owned profile constraints, add a daemon-side multiplexing/bouncer layer in front of `PgliteServer`, or switch the PER 3D default candidate to `postgresql_embedded` for fidelity.
+- KV follow-up should start from the service boundary v0 needs, not from code ownership: if v0 dev mode needs local Redis/Upstash semantics, `local-sandbox` should provide them through a daemon-owned service or compatibility endpoint.
+
+### PER 3D.0 — service-boundary reframe
+
+Status: implemented
+
+Prepare:
+
+- Correct the PER 3D boundary after the initial pglite/KV spike.
+- Preserve the useful spike evidence without over-reading it as a decision to keep Postgres or KV out of `local-sandbox`.
+- Make the remaining sequence explicit so the project can keep moving.
+
+Execute:
+
+- Reframed PER 3D around local service ownership: `local-sandbox` owns the local service surfaces; v0 owns product semantics.
+- Promoted PER 3D to an umbrella with Postgres and KV subtracks.
+- Recorded that `pglite-oxide` is blocked by integration questions, not by project scope.
+- Recorded that KV remains in scope as daemon-owned local infrastructure, while the current `PgLocalKV` shim should not be ported verbatim.
+
+Review:
+
+- The docs should no longer say or imply that KV is “v0-owned” just because the current implementation lives in v0.
+- The next work should be executable proof points: Postgres dependency/service shape and KV surface/backend shape.
+
+### PER 3D.PG-1 — Postgres dependency unblock
+
+Status: planned
+
+Prepare:
+
+- Verify the `pglite-oxide`/`s3s` Cargo conflict precisely.
+- Identify whether the conflict can be solved by upgrading, patching, forking, feature selection, or isolating a backend boundary.
+- Keep `postgresql_embedded` as the fidelity fallback candidate.
+
+Execute:
+
+- Build minimal dependency graphs for `s3s`/`s3s-fs` plus `pglite-oxide`.
+- Test available `s3s` versions and feature combinations.
+- Try a small local patch only if the dependency change is mechanical and low-risk.
+- Document whether direct adoption, a carried patch, process isolation, or fallback is the next viable route.
+
+Review:
+
+- We should know whether the dependency conflict is a short packaging task, an upstream/fork task, or a reason to switch backend candidates.
+
+### PER 3D.PG-2 — Postgres service-shape proof
+
+Status: planned
+
+Prepare:
+
+- Define the daemon-owned Postgres profile contract: service key, host/guest database endpoints, explicit username/password/database, backend, data dir, and connection guidance.
+- Decide what v0 should consume from the profile instead of hardcoding `PG_LOCAL_URL`.
+- Define realistic client behavior to test, including `pg.Pool`-equivalent concurrency.
+
+Execute:
+
+- Build a harness around the proposed profile URL, not the inherited no-user URL shape.
+- Test standard clients, explicit pool constraints, overlapping queries, and shutdown with clients open/closed.
+- If needed, spike a daemon-side single-flight/bouncer layer in front of `PgliteServer`.
+- Run the same harness against `postgresql_embedded` if `PgliteServer` cannot satisfy the service contract.
+
+Review:
+
+- Decide whether `pglite-oxide` is viable under a service contract v0 can reasonably consume.
+- If not, choose the fallback before implementing the manager.
+
+### PER 3D.PG-3 — daemon-owned Postgres manager
+
+Status: planned
+
+Prepare:
+
+- Map the object-storage manager pattern to Postgres lifecycle, readiness, profile facts, diagnostics, and shutdown.
+- Decide which profile fields are generic database facts and which need a Postgres-specific profile struct.
+
+Execute:
+
+- Implement Postgres config, manager, service runner, readiness probe, and profile generation.
+- Wire daemon boot and shutdown.
+- Add profile-derived Postgres contract tests using a standard Postgres client.
+
+Review:
+
+- A fresh checkout can start `local-sandbox-daemon` and expose local Postgres without separately installed Postgres.
+- v0 can consume profile facts instead of owning local Postgres startup/wiring.
+
+### PER 3D.KV-1 — Redis/Upstash surface inventory
+
+Status: planned
+
+Prepare:
+
+- Treat KV as a local infrastructure service surface, not a TypeScript shim ownership question.
+- Define the command inventory needed for v0 to boot locally.
+
+Execute:
+
+- Search v0 for live Redis/Upstash usage, including commands, pipelines, Lua/lock behavior, list/queue semantics, expiry, and atomicity assumptions.
+- Compare that live surface with current `PgLocalKV`.
+- Produce a matrix: required, currently implemented locally, missing, semantics-risky, and product-owned key/schema details.
+
+Review:
+
+- Decide the minimum compatible local KV service surface.
+- Avoid porting `PgLocalKV` verbatim unless it matches the live surface.
+
+### PER 3D.KV-2 — KV backend bakeoff
+
+Status: planned
+
+Prepare:
+
+- Candidate shapes: embedded Redis-compatible/RESP server, daemon-owned Redis-subset service backed by Postgres/PGlite, or daemon-owned product-neutral KV API plus v0 adapter.
+- Evaluation criteria: deletes v0 local-mode code, supports the live command surface, preserves atomic lock/queue behavior, is diagnosable, and avoids product-schema ownership.
+
+Execute:
+
+- Evaluate embedded Redis-compatible crates or RESP server options against the KV-1 command matrix.
+- If no crate fits, spike a minimal Redis-subset endpoint or Postgres-backed helper.
+- Compare the resulting v0 integration shape for each candidate.
+
+Review:
+
+- Choose whether the daemon exposes a Redis URL, a daemon API, or both.
+- Decide whether the chosen backend is ready for a daemon manager PER.
+
+### PER 3D.KV-3 — daemon-owned KV service
+
+Status: planned
+
+Prepare:
+
+- Finalize KV profile facts: host/guest endpoints, protocol, auth, capabilities, persistence, and unsupported operations.
+
+Execute:
+
+- Implement lifecycle, readiness, profile generation, and contract tests for the required Redis/Upstash subset.
+- Keep product key names, schemas, and usage policy in v0.
+
+Review:
+
+- v0 no longer carries the local KV service implementation.
+- `local-sandbox` owns startup, readiness, diagnostics, and profile facts for local KV.
 
 ### PER 3E — embedded routes / proxy / HTTPS compatibility
 
@@ -358,6 +513,7 @@ Review:
 - 2026-05-20: Add a sandbox-compatible TypeScript client façade over the daemon. The Rust core stays substrate-shaped; the façade absorbs `@vercel/sandbox` compatibility so v0 does not grow a large custom adapter.
 - 2026-05-21: PER 3A affirmed interface compatibility as the service-boundary strategy: `local-sandbox` owns local lifecycle/profile/readiness facts while v0 owns product bucket/key/KV schemas and routing/auth policy.
 - 2026-05-21: Local profile contracts must distinguish host-visible, guest-visible, browser-visible, websocket, callback, and public object-storage endpoints. A single URL per service is not enough.
-- 2026-05-21: `PgLocalKV` does not move into `local-sandbox` until a product-neutral KV contract is proven; Postgres lifecycle/profile moves first.
+- 2026-05-21: Do not port `PgLocalKV` into `local-sandbox` verbatim; first prove the product-neutral KV service surface. Postgres lifecycle/profile moves first, but KV remains in scope as local infrastructure if v0 needs Redis/Upstash semantics to boot.
 - 2026-05-22: Sharpened the north star from extracted substrate to self-contained local-development infrastructure server. Default local services should be embedded when viable; external binaries such as MinIO are implementation strategies or parity backends, not the product boundary.
 - 2026-05-22: Latest stable Rust is acceptable for this project when it unlocks better embedded local infrastructure; MSRV should not block adopting a backend such as `pglite-oxide` if it proves to fit v0's Postgres expectations.
+- 2026-05-22: PER 3D.1 bumped the workspace to Rust 1.95 stable, but did not adopt `pglite-oxide 0.5.0` into the main workspace. The remaining blockers are the current S3 `sha2` prerelease dependency line, explicit username profile URLs, pooled-client failure/hangs beyond one connection, and inconsistent clean shutdown after pool scenarios. This is a call for narrower experiments, not a conclusion that Postgres or KV should stay out of `local-sandbox`.
