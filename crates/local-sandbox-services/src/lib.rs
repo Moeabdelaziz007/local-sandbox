@@ -1,5 +1,9 @@
 //! Local service orchestration boundary.
 
+mod key_value;
+
+pub use key_value::*;
+
 use local_sandbox_core::{
     LocalCredentials, LocalEndpoint, LocalEndpointProtocol, LocalEndpointPurpose,
     LocalEndpointVisibility, LocalHealth, LocalHealthStatus, LocalLogProfile,
@@ -288,6 +292,7 @@ impl ObjectStorageConfig {
                 force_path_style: true,
                 capabilities: Self::capabilities(),
             }),
+            key_value: None,
         }
     }
 }

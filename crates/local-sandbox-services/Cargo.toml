@@ -20,5 +20,6 @@ local-sandbox-core = { path = "../local-sandbox-core" }
 s3s.workspace = true
 s3s-fs.workspace = true
 serde.workspace = true
+tinyredis = { path = "../../vendor/tinyredis" }
 tokio = { workspace = true, features = ["net", "process", "time"] }
 tracing.workspace = true

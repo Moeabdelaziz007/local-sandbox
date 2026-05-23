@@ -28,6 +28,7 @@ s3-contract = [
   "dep:crc-fast",
   "dep:reqwest",
 ]
+kv-contract = ["dep:redis"]
 
 [dependencies]
 anyhow.workspace = true
@@ -62,11 +63,17 @@ aws-smithy-types = { workspace = true, optional = true }
 aws-smithy-xml = { workspace = true, optional = true }
 crc-fast = { workspace = true, optional = true }
 reqwest = { version = "0.12.28", default-features = false, optional = true }
+redis = { workspace = true, optional = true }
 
 [[test]]
 name = "s3_contract"
 path = "tests/s3_contract.rs"
 required-features = ["s3-contract"]
+
+[[test]]
+name = "kv_contract"
+path = "tests/kv_contract.rs"
+required-features = ["kv-contract"]
 
 [dev-dependencies]
 tower.workspace = true

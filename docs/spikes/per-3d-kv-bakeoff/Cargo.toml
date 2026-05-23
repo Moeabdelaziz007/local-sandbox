@@ -1,0 +1,26 @@
+[workspace]
+
+[package]
+name = "per-3d-kv-bakeoff"
+version = "0.0.0"
+edition = "2021"
+publish = false
+rust-version = "1.95"
+
+[dependencies]
+anyhow = "1.0.98"
+redis = { version = "0.32.7", features = ["aio", "tokio-comp"] }
+tinyredis = { path = "../../../vendor/tinyredis" }
+tokio = { version = "1.45.1", features = [
+  "macros",
+  "net",
+  "process",
+  "rt-multi-thread",
+  "time",
+] }
+
+[target.'cfg(any())'.dependencies]
+feox-server = "0.7.0"
+hero_redis = { version = "0.3.1", features = ["server"] }
+ignix = "0.3.2"
+radixox = "0.5.0"

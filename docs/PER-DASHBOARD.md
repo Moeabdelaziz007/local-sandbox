@@ -372,7 +372,7 @@ Review:
 
 ### PER 3D.KV-1 — Redis/Upstash surface inventory
 
-Status: planned
+Status: execute complete; ready for review
 
 Prepare:
 
@@ -381,18 +381,23 @@ Prepare:
 
 Execute:
 
-- Search v0 for live Redis/Upstash usage, including commands, pipelines, Lua/lock behavior, list/queue semantics, expiry, and atomicity assumptions.
-- Compare that live surface with current `PgLocalKV`.
-- Produce a matrix: required, currently implemented locally, missing, semantics-risky, and product-owned key/schema details.
+- Active v0 Redis/KV clients are split across `chat/lib/kv.ts` (`@upstash/redis` clients), `web/data/kv/index.ts` (`@vercel/kv` proxy with local patches), and `apps/marketing/lib/kv.ts` (marketing `@upstash/redis`).
+- Active v0 command surface includes get/set/del, mget, setex, set NX with ex/px, hash methods, list methods, set methods, sorted-set methods, counters, exists, scan, ttl/expire, absolute expiry in web usage-code pipelines, and pipelines.
+- Active v0 does not show direct application calls to `eval`, `evalsha`, `scriptLoad`, `multi`, `rpush`, or `ltrim` in the inspected scopes. Lock semantics are library-mediated through `@upstash/lock` in `chat/lib/lock.ts` and VM gateway code.
+- Lima-rfc has `PgLocalKV` under `chat/lib/pg-local-kv.ts` and swaps chat Redis clients to it only when `VM_PROVIDER=vfkit`; active v0 does not contain that shim.
+- Lima-rfc adds branch-only `rpush`/`ltrim` usage in `chat/app/chat/api/vm/perf-trace.ts`; this should not be claimed as active-main usage unless that code lands in the target branch.
+- Current `PgLocalKV` covers a useful subset but misses or incompletely models active live surface including `ttl`, `type`, `hget`, `sismember`, `zrange`, `zcard`, `zrem`, `zremrangebyrank`, `expireat`, `exat`, broad pipeline command coverage, sorted-set ordering, and atomic list pop/claim behavior.
+- Artifacts: `docs/per/3d-kv-1-redis-surface-inventory.md` and `docs/per/3d-kv-1-redis-call-sites.tsv`.
 
 Review:
 
-- Decide the minimum compatible local KV service surface.
-- Avoid porting `PgLocalKV` verbatim unless it matches the live surface.
+- Review should focus on the minimum local boot surface versus the full product surface: VM pool/state, locks, anonymous/web limits, frame/session tokens, credentials, screenshots, OAuth state, and bot/integration helpers are the highest-risk local flows.
+- Review should decide whether KV-2 starts with a Redis-compatible endpoint contract, because v0 already consumes Redis/Upstash clients and PgLocalKV is not a complete compatibility target.
+- Review should keep product key/schema/rate-limit policy in v0 while requiring `local-sandbox` to own lifecycle, readiness, endpoint/profile facts, diagnostics, expiry behavior, and atomic service semantics.
 
 ### PER 3D.KV-2 — KV backend bakeoff
 
-Status: planned
+Status: execute complete; ready for review
 
 Prepare:
 
@@ -401,32 +406,43 @@ Prepare:
 
 Execute:
 
-- Evaluate embedded Redis-compatible crates or RESP server options against the KV-1 command matrix.
-- If no crate fits, spike a minimal Redis-subset endpoint or Postgres-backed helper.
-- Compare the resulting v0 integration shape for each candidate.
+- Added an isolated bakeoff spike at `docs/spikes/per-3d-kv-bakeoff` and results at `docs/per/3d-kv-2-backend-bakeoff.md` plus `docs/per/3d-kv-2-backend-bakeoff-results.tsv`.
+- Tested `tinyredis 1.0.0` as an embedded Tokio server using its library API. It passed 38/48 checks and clean shutdown.
+- `tinyredis` passed the broad core surface: strings, hashes, lists including `rpush`/`ltrim`, sets, sorted sets, scan, simple pipelines, concurrent `rpop` uniqueness, and `MULTI/EXEC`.
+- `tinyredis` failed bounded but important gaps: `SETEX`, `EXPIRE NX`, `SET EXAT`, `ZREMRANGEBYRANK`, mixed pipelines depending on those commands, and script commands (`EVAL`, `SCRIPT LOAD`, `EVALSHA`).
+- Tested `feox-server 0.7.0` as an external binary built from crate source. It passed 18/48 checks, but many commands returned unexpected EOF. Shutdown surfaced as a signal failure under this harness, which sends SIGTERM and treats signal exit as failure.
+- The bakeoff favors `tinyredis` as the first patch/prototype candidate if we are willing to investigate the missing Redis/Upstash semantics.
 
 Review:
 
-- Choose whether the daemon exposes a Redis URL, a daemon API, or both.
-- Decide whether the chosen backend is ready for a daemon manager PER.
+- Decide whether KV-3 should start with a patched `tinyredis` prototype or first evaluate another Redis-compatible crate.
+- Review should focus on whether the missing `tinyredis` commands are bounded patch work and whether script/lock compatibility should be implemented as real Lua support, a targeted `@upstash/lock` compatibility path, or an explicit unsupported local behavior.
+- Patchability spike vendored `tinyredis` locally and added targeted support for `SETEX`, `SET EXAT`, `EXPIRE NX`, `ZREMRANGEBYRANK`, `SCRIPT LOAD`, `EVALSHA`, compare-and-delete release scripts, and compare-and-extend lock scripts. The matrix improved from 38/48 to 48/48 for `tinyredis`; this validates known-gap patchability, not general Lua compatibility.
 
-### PER 3D.KV-3 — daemon-owned KV service
+### PER 3D.KV-3a — daemon-owned KV service manager
 
-Status: planned
+Status: implemented; ready for review
 
 Prepare:
 
-- Finalize KV profile facts: host/guest endpoints, protocol, auth, capabilities, persistence, and unsupported operations.
+- KV belongs beside object storage in `local-sandbox-services`, not in `SandboxProvider`.
+- `local-sandbox` owns local service lifecycle, readiness, profile facts, and Redis-compatible endpoint shape; v0 keeps product schemas, key names, lock policy, rate limits, auth, and session semantics.
+- Patched `tinyredis` is acceptable as the prototype backend, but the profile must not claim full Lua support. It should advertise targeted lock-script compatibility only.
 
 Execute:
 
-- Implement lifecycle, readiness, profile generation, and contract tests for the required Redis/Upstash subset.
-- Keep product key names, schemas, and usage policy in v0.
+- Added `LocalKeyValueProfile` and `LocalKeyValueCapabilities` plus endpoint taxonomy values `purpose=key_value` and `protocol=redis`.
+- Added `KeyValueConfig`, `KeyValueService`, and `KeyValueManager` in `local-sandbox-services`, patterned after object storage with fakeable runner/probe seams, TCP readiness, default host `127.0.0.1`, default port `16379`, guest host `host.internal`, optional password auth, and product-neutral env vars.
+- Embedded the patched `tinyredis` vendor from `vendor/tinyredis` as the prototype backend. Persistence is not enabled in this KV-3a prototype.
+- Wired daemon boot, profile aggregation, and shutdown to include `key_value` beside `object_storage`. S3-only contract helpers keep KV not-started so unrelated tests do not consume a Redis port.
+- Added a feature-gated Rust `kv-contract` daemon test that reads `/profile`, builds a standard Rust `redis` client from the host Redis endpoint, and validates `PING`, strings/expiry (`SET`, `GET`, `SETEX`, `TTL`, `EXPIRE NX`, `SET EXAT`), hashes, lists (`RPUSH`, `LTRIM`, `RPOP`), sets, sorted sets (`ZREMRANGEBYRANK`), `SCAN`, pipeline, `MULTI`/`EXEC`, direct `EVAL` lock release, `SCRIPT LOAD` + `EVALSHA` lock release, and direct `EVAL` lock extension.
+- Updated the TypeScript client profile types and mocked profile test for Redis endpoint/profile facts.
 
 Review:
 
-- v0 no longer carries the local KV service implementation.
-- `local-sandbox` owns startup, readiness, diagnostics, and profile facts for local KV.
+- Review should treat this as KV-3a local-sandbox service substrate only. v0 integration and real Node package/client validation remain KV-3b.
+- The profile intentionally advertises `targeted_lock_scripts=true` and `lua_scripts=false`; this is not a general Lua runtime.
+- Remaining open questions: whether persistence should be enabled/configurable and which KV diagnostics/log facts should be added before v0 consumes the surface.
 
 ### PER 3E — embedded routes / proxy / HTTPS compatibility
 

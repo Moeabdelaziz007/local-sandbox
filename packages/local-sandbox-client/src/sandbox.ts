@@ -109,6 +109,7 @@ export interface LocalServiceProfile {
   credentials?: LocalCredentials | null;
   logs?: LocalLogProfile[] | null;
   object_storage?: LocalObjectStorageProfile | null;
+  key_value?: LocalKeyValueProfile | null;
 }
 
 export interface LocalLogProfile {
@@ -140,6 +141,27 @@ export interface LocalObjectStorageCapabilities {
   list_object_versions: boolean;
 }
 
+export interface LocalKeyValueProfile {
+  database: number;
+  implementation: string;
+  capabilities: LocalKeyValueCapabilities;
+}
+
+export interface LocalKeyValueCapabilities {
+  ping: boolean;
+  strings: boolean;
+  expiry: boolean;
+  hashes: boolean;
+  lists: boolean;
+  sets: boolean;
+  sorted_sets: boolean;
+  scan: boolean;
+  pipeline: boolean;
+  transactions: boolean;
+  targeted_lock_scripts: boolean;
+  lua_scripts: boolean;
+}
+
 export type LocalEndpointVisibility = "host" | "guest" | "browser" | "public";
 
 export type LocalEndpointPurpose =
@@ -149,7 +171,8 @@ export type LocalEndpointPurpose =
   | "callback"
   | "object_storage_api"
   | "public_object_storage"
-  | "database";
+  | "database"
+  | "key_value";
 
 export type LocalEndpointProtocol =
   | "http"
@@ -157,7 +180,8 @@ export type LocalEndpointProtocol =
   | "ws"
   | "wss"
   | "tcp"
-  | "postgres";
+  | "postgres"
+  | "redis";
 
 export interface LocalEndpoint {
   name: string;

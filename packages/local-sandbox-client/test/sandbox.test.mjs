@@ -196,6 +196,67 @@ test("LocalSandboxClient.getProfile reads the daemon profile route", async () =>
               list_object_versions: false,
             },
           },
+          key_value: null,
+        },
+        key_value: {
+          health: {
+            status: "unknown",
+            message: "not started",
+            checked_at_unix_ms: null,
+          },
+          endpoints: [
+            {
+              name: "host_redis",
+              visibility: "host",
+              purpose: "key_value",
+              protocol: "redis",
+              url: "redis://127.0.0.1:16379",
+              health: {
+                status: "unknown",
+                message: null,
+                checked_at_unix_ms: null,
+              },
+            },
+            {
+              name: "guest_redis",
+              visibility: "guest",
+              purpose: "key_value",
+              protocol: "redis",
+              url: "redis://host.internal:16379",
+              health: {
+                status: "unknown",
+                message: null,
+                checked_at_unix_ms: null,
+              },
+            },
+          ],
+          credentials: {
+            access_key_id: null,
+            secret_access_key: null,
+            username: null,
+            password: null,
+            token: null,
+          },
+          logs: [],
+          object_storage: null,
+          key_value: {
+            database: 0,
+            implementation: "tinyredis",
+            capabilities: {
+              ping: true,
+              strings: true,
+              expiry: true,
+              hashes: true,
+              lists: true,
+              sets: true,
+              sorted_sets: true,
+              scan: true,
+              pipeline: true,
+              transactions: true,
+              targeted_lock_scripts: true,
+              lua_scripts: false,
+            },
+          },
         },
         database: {
           health: {
@@ -220,6 +281,7 @@ test("LocalSandboxClient.getProfile reads the daemon profile route", async () =>
           credentials: null,
           logs: [],
           object_storage: null,
+          key_value: null,
         },
       },
     }),
@@ -251,7 +313,10 @@ test("LocalSandboxClient.getProfile reads the daemon profile route", async () =>
     "http://host.internal:9000",
   );
   assert.equal(profile.services.object_storage.logs[0].name, "service");
-  assert.equal(profile.services.object_storage.object_storage.region, "us-east-1");
+  assert.equal(
+    profile.services.object_storage.object_storage.region,
+    "us-east-1",
+  );
   assert.equal(
     profile.services.object_storage.object_storage.force_path_style,
     true,
@@ -270,6 +335,19 @@ test("LocalSandboxClient.getProfile reads the daemon profile route", async () =>
   );
   assert.equal(
     profile.services.object_storage.object_storage.capabilities.versioning,
+    false,
+  );
+  assert.equal(profile.services.key_value.endpoints[0].protocol, "redis");
+  assert.equal(
+    profile.services.key_value.endpoints[0].url,
+    "redis://127.0.0.1:16379",
+  );
+  assert.equal(
+    profile.services.key_value.key_value.capabilities.targeted_lock_scripts,
+    true,
+  );
+  assert.equal(
+    profile.services.key_value.key_value.capabilities.lua_scripts,
     false,
   );
   assert.equal(profile.services.database.endpoints[0].protocol, "postgres");

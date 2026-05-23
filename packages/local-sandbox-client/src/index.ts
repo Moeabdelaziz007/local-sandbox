@@ -15,6 +15,8 @@ export {
   type LocalEndpointVisibility,
   type LocalHealth,
   type LocalHealthStatus,
+  type LocalKeyValueCapabilities,
+  type LocalKeyValueProfile,
   type LocalLogProfile,
   type LocalObjectStorageCapabilities,
   type LocalObjectStorageProfile,

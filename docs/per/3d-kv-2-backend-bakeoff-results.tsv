@@ -1,0 +1,97 @@
+candidate	family	command	status	detail
+tinyredis-1.0.0	readiness	PING	pass	PING response="PONG"
+tinyredis-1.0.0	strings/expiry	SET	pass	SET response="OK"
+tinyredis-1.0.0	strings/expiry	GET	pass	GET value="value"
+tinyredis-1.0.0	strings/expiry	MGET	pass	MGET values=[Some("a"), Some("b"), None]
+tinyredis-1.0.0	strings/expiry	DEL	pass	DEL count=1
+tinyredis-1.0.0	strings/expiry	EXISTS	pass	EXISTS count=1
+tinyredis-1.0.0	strings/expiry	SETEX	fail	An error was signalled by the server - ResponseError: protocol error: unknown command 'SETEX'
+tinyredis-1.0.0	strings/expiry	SET NX EX	pass	SET NX EX tuple=(Some("OK"), None)
+tinyredis-1.0.0	strings/expiry	SET NX PX	pass	SET NX PX response=Some("OK")
+tinyredis-1.0.0	strings/expiry	TTL -2/-1/N	fail	An error was signalled by the server - ResponseError: protocol error: unknown command 'SETEX'
+tinyredis-1.0.0	strings/expiry	EXPIRE NX	fail	EXPIRE NX results: expected (1, 0), got (1, 1)
+tinyredis-1.0.0	strings/expiry	EXPIREAT	pass	EXPIREAT result=1
+tinyredis-1.0.0	strings/expiry	SET EXAT	fail	An error was signalled by the server - ResponseError: syntax error
+tinyredis-1.0.0	strings/expiry	TYPE	pass	TYPE result="string"
+tinyredis-1.0.0	hashes	HSET	pass	HSET count=1
+tinyredis-1.0.0	hashes	HMSET	pass	HMSET response="OK"
+tinyredis-1.0.0	hashes	HGET	pass	HGET value="value"
+tinyredis-1.0.0	hashes	HMGET	pass	HMGET values=[Some("1"), Some("2"), None]
+tinyredis-1.0.0	hashes	HGETALL	pass	HGETALL field count=2
+tinyredis-1.0.0	hashes	HDEL	pass	HDEL count=1
+tinyredis-1.0.0	lists	LPUSH	pass	LPUSH length=2
+tinyredis-1.0.0	lists	RPUSH	pass	RPUSH length=2
+tinyredis-1.0.0	lists	LLEN	pass	LLEN=2
+tinyredis-1.0.0	lists	LRANGE	pass	LRANGE values=["a", "b"]
+tinyredis-1.0.0	lists	RPOP	pass	RPOP value="b"
+tinyredis-1.0.0	lists	LREM	pass	LREM count=2
+tinyredis-1.0.0	lists	LTRIM	pass	LTRIM values=["b", "c"]
+tinyredis-1.0.0	lists	concurrent RPOP uniqueness	pass	20 unique pops
+tinyredis-1.0.0	sets	SADD duplicate count	pass	SADD duplicate count=2
+tinyredis-1.0.0	sets	SMEMBERS	pass	SMEMBERS values={"a", "b"}
+tinyredis-1.0.0	sets	SISMEMBER	pass	SISMEMBER result=1
+tinyredis-1.0.0	sets	SREM	pass	SREM count=1
+tinyredis-1.0.0	zsets	ZADD	pass	ZADD count=1
+tinyredis-1.0.0	zsets	ZSCORE	pass	ZSCORE value="2"
+tinyredis-1.0.0	zsets	ZINCRBY	pass	ZINCRBY value="5"
+tinyredis-1.0.0	zsets	ZCARD	pass	ZCARD count=2
+tinyredis-1.0.0	zsets	ZRANGE	pass	ZRANGE values=["a", "b"]
+tinyredis-1.0.0	zsets	ZREM	pass	ZREM count=1
+tinyredis-1.0.0	zsets	ZREMRANGEBYRANK	fail	An error was signalled by the server - ResponseError: protocol error: unknown command 'ZREMRANGEBYRANK'
+tinyredis-1.0.0	scan/type	SCAN MATCH COUNT	pass	SCAN key set={"per:3d:kv:tinyredis_1.0.0:scan:mixed:hash", "per:3d:kv:tinyredis_1.0.0:scan:mixed:list", "per:3d:kv:tinyredis_1.0.0:scan:mixed:set", "per:3d:kv:tinyredis_1.0.0:scan:mixed:string", "per:3d:kv:tinyredis_1.0.0:scan:mixed:zset"}
+tinyredis-1.0.0	pipelines	INCR + EXPIRE NX	pass	pipeline INCR/EXPIRE=(1, 1)
+tinyredis-1.0.0	pipelines	HSET/HDEL/EXPIREAT/SET EXAT	fail	An error was signalled by the server - ResponseError: syntax error
+tinyredis-1.0.0	pipelines	ZADD/ZREMRANGEBYRANK/ZRANGE	fail	An error was signalled by the server - ResponseError: protocol error: unknown command 'ZREMRANGEBYRANK'
+tinyredis-1.0.0	scripts/transactions	EVAL compare-and-delete	fail	An error was signalled by the server - ResponseError: protocol error: unknown command 'EVAL'
+tinyredis-1.0.0	scripts/transactions	SCRIPT LOAD	fail	An error was signalled by the server - ResponseError: protocol error: unknown command 'SCRIPT'
+tinyredis-1.0.0	scripts/transactions	EVALSHA	fail	An error was signalled by the server - ResponseError: protocol error: unknown command 'SCRIPT'
+tinyredis-1.0.0	scripts/transactions	MULTI/EXEC	pass	MULTI/EXEC results=(1, 2)
+tinyredis-1.0.0	lifecycle	shutdown	pass	endpoint stopped cleanly
+feox-server-0.7.0	readiness	PING	pass	PING response="PONG"
+feox-server-0.7.0	strings/expiry	SET	pass	SET response="OK"
+feox-server-0.7.0	strings/expiry	GET	pass	GET value="value"
+feox-server-0.7.0	strings/expiry	MGET	pass	MGET values=[Some("a"), Some("b"), None]
+feox-server-0.7.0	strings/expiry	DEL	pass	DEL count=1
+feox-server-0.7.0	strings/expiry	EXISTS	pass	EXISTS count=1
+feox-server-0.7.0	strings/expiry	SETEX	fail	unexpected end of file: unexpected end of file
+feox-server-0.7.0	strings/expiry	SET NX EX	fail	SET NX EX tuple: expected (Some("OK"), None), got (Some("OK"), Some("OK"))
+feox-server-0.7.0	strings/expiry	SET NX PX	pass	SET NX PX response=Some("OK")
+feox-server-0.7.0	strings/expiry	TTL -2/-1/N	fail	unexpected end of file: unexpected end of file
+feox-server-0.7.0	strings/expiry	EXPIRE NX	fail	unexpected end of file: unexpected end of file
+feox-server-0.7.0	strings/expiry	EXPIREAT	fail	unexpected end of file: unexpected end of file
+feox-server-0.7.0	strings/expiry	SET EXAT	pass	SET EXAT response="OK"
+feox-server-0.7.0	strings/expiry	TYPE	fail	unexpected end of file: unexpected end of file
+feox-server-0.7.0	hashes	HSET	pass	HSET count=1
+feox-server-0.7.0	hashes	HMSET	fail	unexpected end of file: unexpected end of file
+feox-server-0.7.0	hashes	HGET	pass	HGET value="value"
+feox-server-0.7.0	hashes	HMGET	fail	unexpected end of file: unexpected end of file
+feox-server-0.7.0	hashes	HGETALL	fail	unexpected end of file: unexpected end of file
+feox-server-0.7.0	hashes	HDEL	pass	HDEL count=1
+feox-server-0.7.0	lists	LPUSH	pass	LPUSH length=2
+feox-server-0.7.0	lists	RPUSH	pass	RPUSH length=2
+feox-server-0.7.0	lists	LLEN	pass	LLEN=2
+feox-server-0.7.0	lists	LRANGE	pass	LRANGE values=["a", "b"]
+feox-server-0.7.0	lists	RPOP	pass	RPOP value="b"
+feox-server-0.7.0	lists	LREM	fail	unexpected end of file: unexpected end of file
+feox-server-0.7.0	lists	LTRIM	fail	unexpected end of file: unexpected end of file
+feox-server-0.7.0	lists	concurrent RPOP uniqueness	pass	20 unique pops
+feox-server-0.7.0	sets	SADD duplicate count	fail	unexpected end of file: unexpected end of file
+feox-server-0.7.0	sets	SMEMBERS	fail	unexpected end of file: unexpected end of file
+feox-server-0.7.0	sets	SISMEMBER	fail	unexpected end of file: unexpected end of file
+feox-server-0.7.0	sets	SREM	fail	unexpected end of file: unexpected end of file
+feox-server-0.7.0	zsets	ZADD	fail	unexpected end of file: unexpected end of file
+feox-server-0.7.0	zsets	ZSCORE	fail	unexpected end of file: unexpected end of file
+feox-server-0.7.0	zsets	ZINCRBY	fail	unexpected end of file: unexpected end of file
+feox-server-0.7.0	zsets	ZCARD	fail	unexpected end of file: unexpected end of file
+feox-server-0.7.0	zsets	ZRANGE	fail	unexpected end of file: unexpected end of file
+feox-server-0.7.0	zsets	ZREM	fail	unexpected end of file: unexpected end of file
+feox-server-0.7.0	zsets	ZREMRANGEBYRANK	fail	unexpected end of file: unexpected end of file
+feox-server-0.7.0	scan/type	SCAN MATCH COUNT	fail	unexpected end of file: unexpected end of file
+feox-server-0.7.0	pipelines	INCR + EXPIRE NX	fail	unexpected end of file: unexpected end of file
+feox-server-0.7.0	pipelines	HSET/HDEL/EXPIREAT/SET EXAT	fail	unexpected end of file: unexpected end of file
+feox-server-0.7.0	pipelines	ZADD/ZREMRANGEBYRANK/ZRANGE	fail	unexpected end of file: unexpected end of file
+feox-server-0.7.0	scripts/transactions	EVAL compare-and-delete	fail	unexpected end of file: unexpected end of file
+feox-server-0.7.0	scripts/transactions	SCRIPT LOAD	fail	unexpected end of file: unexpected end of file
+feox-server-0.7.0	scripts/transactions	EVALSHA	fail	unexpected end of file: unexpected end of file
+feox-server-0.7.0	scripts/transactions	MULTI/EXEC	pass	MULTI/EXEC results=(1, 2)
+feox-server-0.7.0	lifecycle	shutdown	fail	feox child exited with signal: 15 (SIGTERM)

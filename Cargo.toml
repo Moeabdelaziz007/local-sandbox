@@ -46,6 +46,7 @@ clap = { version = "4.5.38", features = ["derive", "env"] }
 crc-fast = "=1.9.0"
 hyper-util = "0.1.20"
 ratatui = "0.29.0"
+redis = "0.32.7"
 s3s = "=0.13.0-alpha.3"
 s3s-fs = "=0.13.0-alpha.3"
 serde = { version = "1.0.219", features = ["derive"] }

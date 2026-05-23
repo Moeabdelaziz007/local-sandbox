@@ -15,22 +15,41 @@ use local_sandbox_core::{
     SandboxError, SandboxErrorCode, SandboxId, SandboxProvider, SandboxResult,
     SetNetworkPolicyRequest, WriteFilesRequest,
 };
-use local_sandbox_services::{ObjectStorageConfig, ObjectStorageManager};
+use local_sandbox_services::{
+    KeyValueConfig, KeyValueManager, ObjectStorageConfig, ObjectStorageManager,
+};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc};
 
 /// Build daemon state for the production daemon process.
 pub async fn boot_state() -> SandboxResult<DaemonState> {
-    match ObjectStorageConfig::from_env() {
-        Ok(config) => boot_state_with_object_storage_config(config).await,
+    let object_storage = match ObjectStorageConfig::from_env() {
+        Ok(config) => ObjectStorageManager::from_config(config),
         Err(error) => {
             tracing::warn!(error = %error, "invalid object-storage configuration; daemon will keep serving profile");
-            Ok(DaemonState::with_object_storage(
-                InMemorySandboxProvider::new(),
-                ObjectStorageManager::failed(ObjectStorageConfig::default(), error.to_string()),
-            ))
+            ObjectStorageManager::failed(ObjectStorageConfig::default(), error.to_string())
         }
+    };
+    let key_value = match KeyValueConfig::from_env() {
+        Ok(config) => KeyValueManager::from_config(config),
+        Err(error) => {
+            tracing::warn!(error = %error, "invalid key-value configuration; daemon will keep serving profile");
+            KeyValueManager::failed(KeyValueConfig::default(), error.to_string())
+        }
+    };
+
+    if let Err(error) = object_storage.start().await {
+        tracing::warn!(error = %error, "object storage failed to start; daemon will keep serving profile");
     }
+    if let Err(error) = key_value.start().await {
+        tracing::warn!(error = %error, "key-value storage failed to start; daemon will keep serving profile");
+    }
+
+    Ok(DaemonState::with_services(
+        InMemorySandboxProvider::new(),
+        object_storage,
+        key_value,
+    ))
 }
 
 /// Build daemon state with an explicit object-storage config.
@@ -42,9 +61,26 @@ pub async fn boot_state_with_object_storage_config(
         tracing::warn!(error = %error, "object storage failed to start; daemon will keep serving profile");
     }
 
-    Ok(DaemonState::with_object_storage(
+    Ok(DaemonState::with_services(
         InMemorySandboxProvider::new(),
         object_storage,
+        KeyValueManager::from_config(KeyValueConfig::default()),
+    ))
+}
+
+/// Build daemon state with an explicit key-value config.
+pub async fn boot_state_with_key_value_config(
+    config: KeyValueConfig,
+) -> SandboxResult<DaemonState> {
+    let key_value = KeyValueManager::from_config(config);
+    if let Err(error) = key_value.start().await {
+        tracing::warn!(error = %error, "key-value storage failed to start; daemon will keep serving profile");
+    }
+
+    Ok(DaemonState::with_services(
+        InMemorySandboxProvider::new(),
+        ObjectStorageManager::from_config(ObjectStorageConfig::default()),
+        key_value,
     ))
 }
 
@@ -58,12 +94,16 @@ where
     F: std::future::Future<Output = ()> + Send + 'static,
 {
     let object_storage = state.object_storage_manager();
+    let key_value = state.key_value_manager();
     let result = axum::serve(listener, router_with_state(state))
         .with_graceful_shutdown(shutdown)
         .await;
 
     if let Err(error) = object_storage.shutdown() {
         tracing::warn!(error = %error, "object storage shutdown failed");
+    }
+    if let Err(error) = key_value.shutdown() {
+        tracing::warn!(error = %error, "key-value shutdown failed");
     }
 
     result
@@ -75,6 +115,7 @@ pub struct DaemonState {
     provider: Arc<dyn SandboxProvider>,
     profile_source: Arc<dyn ServiceProfileSource>,
     object_storage: ObjectStorageManager,
+    key_value: KeyValueManager,
 }
 
 impl DaemonState {
@@ -82,10 +123,15 @@ impl DaemonState {
     #[must_use]
     pub fn new(provider: impl SandboxProvider) -> Self {
         let object_storage = ObjectStorageManager::from_config(ObjectStorageConfig::default());
+        let key_value = KeyValueManager::from_config(KeyValueConfig::default());
         Self {
             provider: Arc::new(provider),
-            profile_source: Arc::new(DefaultServiceProfileSource::new(object_storage.clone())),
+            profile_source: Arc::new(DefaultServiceProfileSource::new(
+                object_storage.clone(),
+                key_value.clone(),
+            )),
             object_storage,
+            key_value,
         }
     }
 
@@ -95,10 +141,28 @@ impl DaemonState {
         provider: impl SandboxProvider,
         object_storage: ObjectStorageManager,
     ) -> Self {
+        Self::with_services(
+            provider,
+            object_storage,
+            KeyValueManager::from_config(KeyValueConfig::default()),
+        )
+    }
+
+    /// Create daemon state with daemon-owned service managers.
+    #[must_use]
+    pub fn with_services(
+        provider: impl SandboxProvider,
+        object_storage: ObjectStorageManager,
+        key_value: KeyValueManager,
+    ) -> Self {
         Self {
             provider: Arc::new(provider),
-            profile_source: Arc::new(DefaultServiceProfileSource::new(object_storage.clone())),
+            profile_source: Arc::new(DefaultServiceProfileSource::new(
+                object_storage.clone(),
+                key_value.clone(),
+            )),
             object_storage,
+            key_value,
         }
     }
 
@@ -118,6 +182,12 @@ impl DaemonState {
         self.object_storage.clone()
     }
 
+    /// Return the daemon-owned key-value manager.
+    #[must_use]
+    pub fn key_value_manager(&self) -> KeyValueManager {
+        self.key_value.clone()
+    }
+
     async fn profile(&self) -> Result<LocalProfile, SandboxError> {
         let capabilities = self.provider.capabilities().await?;
         Ok(default_profile(
@@ -135,11 +205,15 @@ pub trait ServiceProfileSource: Send + Sync {
 
 struct DefaultServiceProfileSource {
     object_storage: ObjectStorageManager,
+    key_value: KeyValueManager,
 }
 
 impl DefaultServiceProfileSource {
-    fn new(object_storage: ObjectStorageManager) -> Self {
-        Self { object_storage }
+    fn new(object_storage: ObjectStorageManager, key_value: KeyValueManager) -> Self {
+        Self {
+            object_storage,
+            key_value,
+        }
     }
 }
 
@@ -147,6 +221,7 @@ impl ServiceProfileSource for DefaultServiceProfileSource {
     fn services(&self) -> BTreeMap<String, LocalServiceProfile> {
         let mut services = default_unknown_services();
         services.insert("object_storage".to_string(), self.object_storage.profile());
+        services.insert("key_value".to_string(), self.key_value.profile());
         services
     }
 }
@@ -409,6 +484,7 @@ fn default_unknown_services() -> BTreeMap<String, LocalServiceProfile> {
                 credentials: Some(empty_credentials()),
                 logs: Vec::new(),
                 object_storage: None,
+                key_value: None,
             },
         ),
         (
@@ -424,6 +500,7 @@ fn default_unknown_services() -> BTreeMap<String, LocalServiceProfile> {
                 credentials: None,
                 logs: Vec::new(),
                 object_storage: None,
+                key_value: None,
             },
         ),
     ])
@@ -568,6 +645,29 @@ mod tests {
         assert!(!object_storage_details.capabilities.list_object_versions);
         assert_eq!(object_storage.logs.len(), 1);
 
+        let key_value = profile.services.get("key_value").unwrap();
+        assert_eq!(key_value.health.status, LocalHealthStatus::Unknown);
+        assert_eq!(key_value.endpoints.len(), 2);
+        assert!(key_value.endpoints.iter().any(|endpoint| {
+            endpoint.visibility == LocalEndpointVisibility::Host
+                && endpoint.purpose == LocalEndpointPurpose::KeyValue
+                && endpoint.protocol == LocalEndpointProtocol::Redis
+                && endpoint.url.as_deref() == Some("redis://127.0.0.1:16379")
+        }));
+        assert!(key_value.endpoints.iter().any(|endpoint| {
+            endpoint.visibility == LocalEndpointVisibility::Guest
+                && endpoint.purpose == LocalEndpointPurpose::KeyValue
+                && endpoint.protocol == LocalEndpointProtocol::Redis
+                && endpoint.url.as_deref() == Some("redis://host.internal:16379")
+        }));
+        let key_value_details = key_value.key_value.as_ref().unwrap();
+        assert_eq!(key_value_details.database, 0);
+        assert_eq!(key_value_details.implementation, "tinyredis");
+        assert!(key_value_details.capabilities.ping);
+        assert!(key_value_details.capabilities.strings);
+        assert!(key_value_details.capabilities.targeted_lock_scripts);
+        assert!(!key_value_details.capabilities.lua_scripts);
+
         let database = profile.services.get("database").unwrap();
         assert!(database.endpoints.iter().any(|endpoint| {
             endpoint.visibility == LocalEndpointVisibility::Host
@@ -606,6 +706,7 @@ mod tests {
                         credentials: None,
                         logs: Vec::new(),
                         object_storage: None,
+                        key_value: None,
                     },
                 )])
             }

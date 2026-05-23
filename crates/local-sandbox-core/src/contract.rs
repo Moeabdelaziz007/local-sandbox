@@ -192,6 +192,9 @@ pub struct LocalServiceProfile {
     /// Object-storage-specific facts, when this service is S3-compatible.
     #[serde(default)]
     pub object_storage: Option<LocalObjectStorageProfile>,
+    /// Key-value-specific facts, when this service is Redis-compatible.
+    #[serde(default)]
+    pub key_value: Option<LocalKeyValueProfile>,
 }
 
 /// Local diagnostic log facts.
@@ -250,6 +253,47 @@ pub struct LocalObjectStorageCapabilities {
     pub list_object_versions: bool,
 }
 
+/// Redis-compatible key-value profile facts.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct LocalKeyValueProfile {
+    /// Redis database number used by default local clients.
+    pub database: u16,
+    /// Backend implementation serving the Redis-compatible endpoint.
+    pub implementation: String,
+    /// Supported and unsupported Redis-compatible operation families.
+    pub capabilities: LocalKeyValueCapabilities,
+}
+
+/// Redis-compatible key-value operation support flags.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct LocalKeyValueCapabilities {
+    /// `PING` is supported.
+    pub ping: bool,
+    /// String commands such as `SET` and `GET` are supported.
+    pub strings: bool,
+    /// Expiry commands and options are supported.
+    pub expiry: bool,
+    /// Hash commands are supported.
+    pub hashes: bool,
+    /// List commands are supported.
+    pub lists: bool,
+    /// Set commands are supported.
+    pub sets: bool,
+    /// Sorted-set commands are supported.
+    pub sorted_sets: bool,
+    /// Cursor scanning commands are supported.
+    pub scan: bool,
+    /// Client command pipelining is supported.
+    pub pipeline: bool,
+    /// `MULTI`/`EXEC` transactions are supported.
+    pub transactions: bool,
+    /// Targeted lock-script compatibility is supported.
+    pub targeted_lock_scripts: bool,
+    /// General Lua scripting is supported.
+    pub lua_scripts: bool,
+}
+
 /// Local endpoint visibility class.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -282,6 +326,8 @@ pub enum LocalEndpointPurpose {
     PublicObjectStorage,
     /// Database connection endpoint.
     Database,
+    /// Redis-compatible key-value endpoint.
+    KeyValue,
 }
 
 /// Local endpoint transport protocol.
@@ -300,6 +346,8 @@ pub enum LocalEndpointProtocol {
     Tcp,
     /// Postgres protocol.
     Postgres,
+    /// Redis RESP protocol.
+    Redis,
 }
 
 /// Local endpoint facts.
@@ -809,6 +857,24 @@ mod tests {
                             list_object_versions: false,
                         },
                     }),
+                    key_value: Some(LocalKeyValueProfile {
+                        database: 0,
+                        implementation: "tinyredis".to_string(),
+                        capabilities: LocalKeyValueCapabilities {
+                            ping: true,
+                            strings: true,
+                            expiry: true,
+                            hashes: true,
+                            lists: true,
+                            sets: true,
+                            sorted_sets: true,
+                            scan: true,
+                            pipeline: true,
+                            transactions: true,
+                            targeted_lock_scripts: true,
+                            lua_scripts: false,
+                        },
+                    }),
                 },
             )]),
         };
@@ -847,6 +913,27 @@ mod tests {
                     "browser_upload": false,
                     "versioning": false,
                     "list_object_versions": false,
+                }
+            })
+        );
+        assert_eq!(
+            value["services"]["object_storage"]["key_value"],
+            json!({
+                "database": 0,
+                "implementation": "tinyredis",
+                "capabilities": {
+                    "ping": true,
+                    "strings": true,
+                    "expiry": true,
+                    "hashes": true,
+                    "lists": true,
+                    "sets": true,
+                    "sorted_sets": true,
+                    "scan": true,
+                    "pipeline": true,
+                    "transactions": true,
+                    "targeted_lock_scripts": true,
+                    "lua_scripts": false
                 }
             })
         );
