@@ -470,6 +470,33 @@ Review:
 - Current local-sandbox profile facts are enough to drive a Redis-compatible service plus a local adapter, but they do not yet advertise a first-class Upstash REST endpoint.
 - A future v0 integration can either build a product-side adapter from Redis profile facts or request a separate daemon-owned/profile-advertised Upstash REST compatibility endpoint.
 
+### PER 3D.KV-3c — v0 integration shape proof
+
+Status: reviewed; integration-shape proof complete
+
+Prepare:
+
+- Prove whether v0 can consume current `local-sandbox` `services.key_value` Redis profile facts through a small local-mode adapter/bridge.
+- Do not implement a daemon-owned Upstash REST endpoint yet.
+- Keep product key names, schemas, rate-limit policy, and local-mode selection in v0.
+- Stop if the v0 target branch is unclear, if raw Redis pub/sub is required, or if the proof requires broad/scattered v0 product changes.
+
+Execute:
+
+- Selected `/Users/wycats/Code/v0-lima-rfc` as the v0 target because it contains `dev:local`, local sandbox commands, `VM_PROVIDER=vfkit` local-mode selection, and the centralized `chat/lib/kv.ts` seam that currently swaps chat clients to `PgLocalKV`. `/Users/wycats/Code/v0` uses direct REST env clients and does not have that local-sandbox path.
+- Added `docs/spikes/kv-3c-v0-shape-proof.mjs`, a proof harness that starts `local-sandbox-daemon`, reads `/profile`, extracts the host Redis endpoint, starts a narrow harness-only Upstash REST bridge, and runs v0-shaped command smokes through real `@upstash/redis`, `@vercel/kv`, `@upstash/lock`, and `@upstash/ratelimit` clients.
+- Proved core chat/web command coverage through the bridge: strings, `mget`, `setex`, `ttl`, `expire`, `incr`, `del`, hashes, lists including `rpush`/`ltrim`, sets, sorted sets, `scan`, `type`, and ordered pipeline exec for tested commands.
+- Proved real `@upstash/lock` acquire, contention, extend, release, and reacquire through targeted lock-script support.
+- Classified `@upstash/ratelimit` fixed-window as unsupported because it still requires generic Lua while the profile advertises `lua_scripts=false`. v0-lima-rfc's product-owned local rate-limit adapter remains the right local path.
+- Classified raw Redis pub/sub as unsupported: `SUBSCRIBE` returns `ERR protocol error: unknown command 'SUBSCRIBE'` against current `tinyredis`.
+- Added `docs/per/3d-kv-3c-v0-integration-shape-proof.md` with target selection, command/transport classification, and route recommendation.
+
+Review:
+
+- The current profile is enough to support a v0-side local adapter/bridge proof. This does not prove a full v0 local boot, and a daemon-advertised Upstash REST endpoint is not required for the next v0 integration spike.
+- Proceed next with a v0-side local adapter/bridge that consumes `/profile` Redis facts while keeping product env names, key/schema choices, and rate-limit policy in v0.
+- Loop before broad integration if v0 requires raw Redis pub/sub, if the adapter diff becomes scattered across product code, or if multiple products need the same daemon-owned Upstash REST compatibility surface.
+
 ### PER 3E — embedded routes / proxy / HTTPS compatibility
 
 Status: planned

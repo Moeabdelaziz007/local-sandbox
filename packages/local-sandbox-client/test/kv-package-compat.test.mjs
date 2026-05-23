@@ -22,7 +22,7 @@ const BRIDGE_ERROR_MESSAGES = new Set([
   "unauthorized",
   "invalid request",
   "command failed",
-  "unsupported script: generic Lua requires local-sandbox key_value.capabilities.lua_scripts=false",
+  "unsupported script: generic Lua is unavailable because local-sandbox key_value.capabilities.lua_scripts=false",
 ]);
 
 test(
@@ -536,7 +536,7 @@ async function runScriptCommand(redis, name, command) {
     if (isRatelimitScript(script)) {
       return {
         error:
-          "unsupported script: generic Lua requires local-sandbox key_value.capabilities.lua_scripts=false",
+          "unsupported script: generic Lua is unavailable because local-sandbox key_value.capabilities.lua_scripts=false",
       };
     }
     const result = await redis.call("script", "load", script);
@@ -547,7 +547,7 @@ async function runScriptCommand(redis, name, command) {
   if (isRatelimitScript(script)) {
     return {
       error:
-        "unsupported script: generic Lua requires local-sandbox key_value.capabilities.lua_scripts=false",
+        "unsupported script: generic Lua is unavailable because local-sandbox key_value.capabilities.lua_scripts=false",
     };
   }
   try {
