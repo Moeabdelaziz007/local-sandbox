@@ -444,6 +444,32 @@ Review:
 - The profile intentionally advertises `targeted_lock_scripts=true` and `lua_scripts=false`; this is not a general Lua runtime.
 - Remaining open questions: whether persistence should be enabled/configurable and which KV diagnostics/log facts should be added before v0 consumes the surface.
 
+### PER 3D.KV-3b — Node package compatibility proof
+
+Status: implemented; ready for review
+
+Prepare:
+
+- Prove real v0-observed Node package compatibility against local-sandbox profile-derived KV rather than claiming v0 integration.
+- Treat current profile facts honestly: KV-3a advertises Redis RESP endpoints, while `@upstash/redis`, `@vercel/kv`, `@upstash/lock`, and `@upstash/ratelimit` are Upstash REST-shaped packages.
+- Expect `@upstash/lock` to pass if targeted lock scripts match the real package; expect `@upstash/ratelimit` fixed-window to require generic Lua and therefore remain unsupported under `lua_scripts=false`.
+
+Execute:
+
+- Added pinned package dependencies for `@upstash/redis@1.34.0`, `@vercel/kv@3.0.0`, `@upstash/lock@0.2.1`, `@upstash/ratelimit@2.0.3`, plus `ioredis@5.7.0` for a harness-only REST-to-Redis bridge.
+- Added a Node test that builds and starts `local-sandbox-daemon`, reads `/profile` through `LocalSandboxClient`, asserts the profile exposes only Redis KV endpoints, then drives real packages through a narrow test-local Upstash REST bridge backed by the profile-derived host Redis endpoint.
+- Proved `@upstash/redis` coverage for ping, strings, `mget`, `setex`, `ttl`, conditional expiry options, hashes, lists, sets, sorted sets, scan/type, and pipeline shapes.
+- Proved `@vercel/kv` `createClient`, web-style `set`/`get`, pipeline including `zremrangebyrank`, and `scanIterator`.
+- Proved real `@upstash/lock` acquire, competing acquire failure, extend, release, and reacquire behavior against KV-3a targeted lock-script support.
+- Classified `@upstash/ratelimit` fixed-window as explicitly unsupported because it uses generic Lua script load/evalsha while the profile advertises `lua_scripts=false`.
+- Added `docs/per/3d-kv-3b-node-package-compatibility.md` with exact versions, transport finding, coverage, and classification.
+
+Review:
+
+- This is a package compatibility proof, not v0 integration. Product key/schema/rate-limit policy and local-mode selection remain in v0.
+- Current local-sandbox profile facts are enough to drive a Redis-compatible service plus a local adapter, but they do not yet advertise a first-class Upstash REST endpoint.
+- A future v0 integration can either build a product-side adapter from Redis profile facts or request a separate daemon-owned/profile-advertised Upstash REST compatibility endpoint.
+
 ### PER 3E — embedded routes / proxy / HTTPS compatibility
 
 Status: planned
