@@ -38,16 +38,16 @@ The bridge is deliberately harness-only. It is not a daemon endpoint and is not 
 
 ## Command and Transport Results
 
-| Area | Classification | Evidence |
-| ---- | -------------- | -------- |
-| Profile Redis endpoint | pass | `services.key_value` advertised `host_redis` with `protocol=redis`, `visibility=host`, `purpose=key_value`, and implementation `tinyredis`. |
-| V0-shaped REST env transport | pass through local bridge | The proof maps `V0CHAT_KV_REST_API_URL`, `V0CHAT_KV_RATELIMIT_REST_API_URL`, `V0_EPHEMERAL_KV_REST_API_URL`, and `KV_REST_API_URL` to the local bridge URL/token shape. |
-| Raw Redis env transport | pass for direct clients | The proof maps a raw local value such as `LOCAL_SANDBOX_REDIS_URL=redis://127.0.0.1:<port>` from the profile endpoint. |
-| Core chat/web commands | pass | Strings, `mget`, `setex`, `ttl`, `expire`, `incr`, `del`, hashes, lists including `rpush`/`ltrim`, sets, sorted sets, `scan`, and `type` pass through the bridge. |
-| Pipelines | pass | Ordered `@vercel/kv` pipeline exec covers anonymous-message-limit style `incr`/`expire NX`, hash writes, reads, and perf-trace list trim for the tested commands. |
-| Locks | pass | Real `@upstash/lock` acquire, contention, extend, release, and reacquire pass through targeted lock-script support. |
-| `@upstash/ratelimit` | unsupported | Fixed-window still uses generic Lua script loading/evalsha and fails under `lua_scripts=false`. v0-lima-rfc's product-owned local rate-limit adapter remains the right local path. |
-| Raw Redis pub/sub | unsupported | `SUBSCRIBE` fails with `ERR protocol error: unknown command 'SUBSCRIBE'` against current `tinyredis`. |
+| Area                         | Classification            | Evidence                                                                                                                                                                           |
+| ---------------------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Profile Redis endpoint       | pass                      | `services.key_value` advertised `host_redis` with `protocol=redis`, `visibility=host`, `purpose=key_value`, and implementation `tinyredis`.                                        |
+| V0-shaped REST env transport | pass through local bridge | The proof maps `V0CHAT_KV_REST_API_URL`, `V0CHAT_KV_RATELIMIT_REST_API_URL`, `V0_EPHEMERAL_KV_REST_API_URL`, and `KV_REST_API_URL` to the local bridge URL/token shape.            |
+| Raw Redis env transport      | pass for direct clients   | The proof maps a raw local value such as `LOCAL_SANDBOX_REDIS_URL=redis://127.0.0.1:<port>` from the profile endpoint.                                                             |
+| Core chat/web commands       | pass                      | Strings, `mget`, `setex`, `ttl`, `expire`, `incr`, `del`, hashes, lists including `rpush`/`ltrim`, sets, sorted sets, `scan`, and `type` pass through the bridge.                  |
+| Pipelines                    | pass                      | Ordered `@vercel/kv` pipeline exec covers anonymous-message-limit style `incr`/`expire NX`, hash writes, reads, and perf-trace list trim for the tested commands.                  |
+| Locks                        | pass                      | Real `@upstash/lock` acquire, contention, extend, release, and reacquire pass through targeted lock-script support.                                                                |
+| `@upstash/ratelimit`         | unsupported               | Fixed-window still uses generic Lua script loading/evalsha and fails under `lua_scripts=false`. v0-lima-rfc's product-owned local rate-limit adapter remains the right local path. |
+| Raw Redis pub/sub            | unsupported               | `SUBSCRIBE` fails with `ERR protocol error: unknown command 'SUBSCRIBE'` against current `tinyredis`.                                                                              |
 
 ## Interpretation
 
@@ -72,7 +72,7 @@ Loop only if the next v0 integration spike discovers broad scattered product cha
 
 ## Validation
 
-Run `pnpm build` before invoking the spike directly; the harness imports the built `LocalSandboxClient` from `packages/local-sandbox-client/dist`.
+The harness imports `LocalSandboxClient` from `packages/local-sandbox-client/src`. Node 22.18+ strips erasable TypeScript by default, which is enough for this client source; `pnpm typecheck` remains the compile guard.
 
 Baseline before changes:
 

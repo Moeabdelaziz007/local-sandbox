@@ -3,10 +3,12 @@
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.32.1",
+  "engines": {
+    "node": ">=22.18.0"
+  },
   "scripts": {
-    "build": "tsc -p packages/local-sandbox-client/tsconfig.json",
-    "test": "pnpm build && node --test packages/local-sandbox-client/test/*.test.mjs",
-    "typecheck": "tsc -p packages/local-sandbox-client/tsconfig.json --noEmit"
+    "test": "node --test packages/local-sandbox-client/test/*.test.mjs",
+    "typecheck": "tsc -p packages/local-sandbox-client/tsconfig.json"
   },
   "devDependencies": {
     "@types/node": "^22.15.21",

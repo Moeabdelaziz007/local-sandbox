@@ -12,7 +12,7 @@ import { Ratelimit } from "@upstash/ratelimit";
 import { Redis } from "@upstash/redis";
 import { createClient } from "@vercel/kv";
 import IORedis from "ioredis";
-import { LocalSandboxClient } from "../dist/index.js";
+import { LocalSandboxClient } from "../src/index.ts";
 
 const BRIDGE_TOKEN = "local-sandbox-test-token";
 const DAEMON_READY_PATTERN = /local-sandbox daemon listening .*addr=([^\s]+)/;
@@ -32,7 +32,9 @@ test(
     const tempRoot = await mkdtemp(
       path.join(os.tmpdir(), "local-sandbox-kv-packages-"),
     );
-    const { daemon, keyValuePort } = await startDaemonWithFreePorts({ tempRoot });
+    const { daemon, keyValuePort } = await startDaemonWithFreePorts({
+      tempRoot,
+    });
     const cleanup = async () => {
       await daemon.stop();
       await rm(tempRoot, { recursive: true, force: true });
@@ -249,7 +251,9 @@ async function startDaemonWithFreePorts({ tempRoot }) {
 function isAddressInUseError(error) {
   return (
     error instanceof Error &&
-    /address already in use|addrinuse|os error 48|os error 98/i.test(error.message)
+    /address already in use|addrinuse|os error 48|os error 98/i.test(
+      error.message,
+    )
   );
 }
 
@@ -372,7 +376,10 @@ async function onceWithTimeout(emitter, event, timeoutMs) {
     return await Promise.race([
       once(emitter, event),
       new Promise((_, reject) => {
-        timeout = setTimeout(() => reject(new Error(`${event} timed out`)), timeoutMs);
+        timeout = setTimeout(
+          () => reject(new Error(`${event} timed out`)),
+          timeoutMs,
+        );
       }),
     ]);
   } finally {
@@ -525,8 +532,8 @@ async function runBridgeCommand(redis, command) {
   try {
     const result = await redis.call(name, ...args);
     return { result: encodeBridgeResult(normalizeRedisResult(name, result)) };
-    } catch {
-      return bridgeCommandError("command failed");
+  } catch {
+    return bridgeCommandError("command failed");
   }
 }
 

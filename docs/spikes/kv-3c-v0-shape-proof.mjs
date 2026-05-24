@@ -13,7 +13,7 @@ import { Ratelimit } from "@upstash/ratelimit";
 import { Redis } from "@upstash/redis";
 import { createClient } from "@vercel/kv";
 import IORedis from "ioredis";
-import { LocalSandboxClient } from "../../packages/local-sandbox-client/dist/index.js";
+import { LocalSandboxClient } from "../../packages/local-sandbox-client/src/index.ts";
 
 const BRIDGE_TOKEN = "local-sandbox-kv-3c-token";
 const DAEMON_READY_PATTERN = /local-sandbox daemon listening .*addr=([^\s]+)/;
@@ -33,7 +33,9 @@ const BRIDGE_ERROR_MESSAGES = new Set([
 const checks = [];
 
 async function main() {
-  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "local-sandbox-kv-3c-"));
+  const tempRoot = await mkdtemp(
+    path.join(os.tmpdir(), "local-sandbox-kv-3c-"),
+  );
   const { daemon, keyValuePort } = await startDaemonWithFreePorts({ tempRoot });
 
   try {
@@ -130,14 +132,20 @@ async function proveCoreChatWebCommands(redis, kv, prefix) {
   assert.equal(await redis.incr(key(prefix, "counter")), 1);
   assert.equal(await redis.del(key(prefix, "counter")), 1);
 
-  assert.equal(await redis.hmset(key(prefix, "hash"), { a: "1", b: "2" }), "OK");
+  assert.equal(
+    await redis.hmset(key(prefix, "hash"), { a: "1", b: "2" }),
+    "OK",
+  );
   assert.deepEqual(await redis.hmget(key(prefix, "hash"), "a", "missing"), {
     a: 1,
     missing: null,
   });
   assert.equal(await redis.hset(key(prefix, "hash"), { c: "3" }), 1);
   assert.equal(await redis.hdel(key(prefix, "hash"), "b"), 1);
-  assert.equal(await redis.exists(key(prefix, "hash"), key(prefix, "missing")), 1);
+  assert.equal(
+    await redis.exists(key(prefix, "hash"), key(prefix, "missing")),
+    1,
+  );
 
   assert.equal(await redis.rpush(key(prefix, "list"), "a", "b", "c"), 3);
   assert.equal(await redis.ltrim(key(prefix, "list"), 1, -1), "OK");
@@ -149,7 +157,10 @@ async function proveCoreChatWebCommands(redis, kv, prefix) {
 
   assert.equal(await redis.sadd(key(prefix, "set"), "a", "b"), 2);
   assert.equal(await redis.sismember(key(prefix, "set"), "a"), 1);
-  assert.deepEqual(new Set(await redis.smembers(key(prefix, "set"))), new Set(["a", "b"]));
+  assert.deepEqual(
+    new Set(await redis.smembers(key(prefix, "set"))),
+    new Set(["a", "b"]),
+  );
   assert.equal(await redis.srem(key(prefix, "set"), "b"), 1);
 
   assert.equal(
@@ -268,8 +279,15 @@ async function classifyRawRedisPubSub(rawRedis, prefix) {
 
     const publishCount = await rawRedis.publish(channel, "hello");
     assert.equal(publishCount, 1);
-    assert.deepEqual(await received, { receivedChannel: channel, message: "hello" });
-    record("raw redis pub/sub", "pass", "PUBLISH/SUBSCRIBE round trip over profile Redis URL");
+    assert.deepEqual(await received, {
+      receivedChannel: channel,
+      message: "hello",
+    });
+    record(
+      "raw redis pub/sub",
+      "pass",
+      "PUBLISH/SUBSCRIBE round trip over profile Redis URL",
+    );
   } catch (error) {
     record(
       "raw redis pub/sub",
@@ -306,7 +324,9 @@ async function startDaemonWithFreePorts({ tempRoot }) {
 function isAddressInUseError(error) {
   return (
     error instanceof Error &&
-    /address already in use|addrinuse|os error 48|os error 98/i.test(error.message)
+    /address already in use|addrinuse|os error 48|os error 98/i.test(
+      error.message,
+    )
   );
 }
 
@@ -317,7 +337,10 @@ async function startDaemon({ tempRoot, keyValuePort, objectStoragePort }) {
     env: {
       ...process.env,
       RUST_LOG: "local_sandbox_daemon=info",
-      LOCAL_SANDBOX_OBJECT_STORAGE_DATA_DIR: path.join(tempRoot, "object-storage"),
+      LOCAL_SANDBOX_OBJECT_STORAGE_DATA_DIR: path.join(
+        tempRoot,
+        "object-storage",
+      ),
       LOCAL_SANDBOX_OBJECT_STORAGE_API_PORT: String(objectStoragePort),
       LOCAL_SANDBOX_KEY_VALUE_DATA_DIR: path.join(tempRoot, "key-value"),
       LOCAL_SANDBOX_KEY_VALUE_PORT: String(keyValuePort),
@@ -426,7 +449,10 @@ async function onceWithTimeout(emitter, event, timeoutMs) {
     return await Promise.race([
       once(emitter, event),
       new Promise((_, reject) => {
-        timeout = setTimeout(() => reject(new Error(`${event} timed out`)), timeoutMs);
+        timeout = setTimeout(
+          () => reject(new Error(`${event} timed out`)),
+          timeoutMs,
+        );
       }),
     ]);
   } finally {
@@ -441,7 +467,10 @@ async function daemonBinaryPath() {
   }
   if (cachedDaemonBinary) return cachedDaemonBinary;
   await buildDaemonBinary();
-  cachedDaemonBinary = path.join(REPO_ROOT, "target/debug/local-sandbox-daemon");
+  cachedDaemonBinary = path.join(
+    REPO_ROOT,
+    "target/debug/local-sandbox-daemon",
+  );
   return cachedDaemonBinary;
 }
 
@@ -459,7 +488,9 @@ async function buildDaemonBinary() {
         daemonBuilt = true;
         resolve();
       } else {
-        reject(new Error(`cargo build -p local-sandbox-daemon exited with ${code}`));
+        reject(
+          new Error(`cargo build -p local-sandbox-daemon exited with ${code}`),
+        );
       }
     });
   });

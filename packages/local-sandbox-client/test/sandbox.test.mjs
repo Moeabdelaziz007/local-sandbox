@@ -5,7 +5,7 @@ import {
   Command,
   LocalSandboxClient,
   Sandbox,
-} from "../dist/index.js";
+} from "../src/index.ts";
 
 test("Sandbox.create maps production-shaped options to daemon create", async () => {
   const fetch = createMockFetch([

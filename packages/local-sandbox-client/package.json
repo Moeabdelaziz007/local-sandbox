@@ -2,13 +2,5 @@
   "name": "@vercel-labs/local-sandbox-client",
   "version": "0.1.0",
   "type": "module",
-  "private": true,
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
-    }
-  }
+  "private": true
 }

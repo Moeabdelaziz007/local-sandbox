@@ -33,4 +33,4 @@ export {
   type SandboxStatus,
   type SnapshotResult,
   type VMFile,
-} from "./sandbox.js";
+} from "./sandbox.ts";

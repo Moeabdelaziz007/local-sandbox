@@ -472,7 +472,7 @@ Review:
 
 ### PER 3D.KV-3c — v0 integration shape proof
 
-Status: reviewed; integration-shape proof complete
+Status: reviewed; integration-shape proof complete; target choice superseded by current-main recon
 
 Prepare:
 
@@ -496,6 +496,17 @@ Review:
 - The current profile is enough to support a v0-side local adapter/bridge proof. This does not prove a full v0 local boot, and a daemon-advertised Upstash REST endpoint is not required for the next v0 integration spike.
 - Proceed next with a v0-side local adapter/bridge that consumes `/profile` Redis facts while keeping product env names, key/schema choices, and rate-limit policy in v0.
 - Loop before broad integration if v0 requires raw Redis pub/sub, if the adapter diff becomes scattered across product code, or if multiple products need the same daemon-owned Upstash REST compatibility surface.
+- `/Users/wycats/Code/v0-lima-rfc` is now prior art, not the integration target. Current v0 `main` should be the target for the next usable milestone.
+
+### Modified v0 main usability milestones
+
+These milestones describe the points where a modified current v0 `main` should be able to consume a concrete `local-sandbox` surface. The target worktree for the first milestone is `/Users/wycats/Code/v0.worktrees/kv-seam-recon` on current `main`; Lima remains useful prior art only.
+
+1. KV adapter milestone: modified v0 `main` can use `local-sandbox` `services.key_value` by starting a v0-owned local Upstash REST bridge from daemon `/profile` Redis facts. Existing REST-shaped constructors stay in place for `chat/lib/kv.ts`, `web/data/kv/index.ts`, and `apps/marketing/lib/kv.ts`. Product key names, schemas, local-mode selection, and rate-limit policy stay in v0.
+2. Object-storage milestone: modified v0 `main` can use daemon-owned object-storage profile facts and delete local S3 lifecycle/env wiring. Product bucket/key semantics stay in v0; guest-visible and browser-visible flows remain tied to the route/proxy milestone.
+3. Sandbox client milestone: modified v0 `main` can select the sandbox-compatible `@vercel-labs/local-sandbox-client` façade for lifecycle, commands, files, routes, timeout, stop, and snapshot instead of carrying custom substrate internals.
+4. Route/proxy milestone: modified v0 `main` consumes profile/route facts for preview iframe, log websocket, lifecycle callback, S3 public endpoint, guest endpoint, and browser-visible URLs instead of composing local production-shaped URLs itself.
+5. Full local-dev milestone: modified v0 `main` can boot against `local-sandbox`-owned VM, object-storage, KV, route/proxy, and eventually Postgres surfaces without the old Lima scaffolding.
 
 ### PER 3E — embedded routes / proxy / HTTPS compatibility
 
@@ -519,21 +530,39 @@ Review:
 - v0 should stop composing production URL shapes from local `subdomain` values except through explicit compatibility helpers.
 - HTTPS support should not require `mkcert`, `openssl`, or hidden trust-store mutation.
 
-### PER 3F — v0 integration probe
+### PER 3F — current-main v0 KV adapter probe
 
-Status: planned
+Status: implemented; bounded current-main KV adapter probe complete
 
 Prepare:
 
-- Identify the smallest v0 branch that selects `local-sandbox` profile/client surfaces and deletes superseded local substrate code.
+- Target `/Users/wycats/Code/v0.worktrees/kv-seam-recon` on current v0 `main`; do not start from `v0-lima-rfc` except as prior art.
+- Keep the seam narrow: v0 owns a local bootstrap plus Upstash REST bridge, while `local-sandbox` owns the Redis-compatible service lifecycle, readiness, and profile facts.
+- Feed existing centralized REST-shaped constructors in `chat/lib/kv.ts`, `web/data/kv/index.ts`, and `apps/marketing/lib/kv.ts` before touching product call sites.
+- Keep product key names, schema compatibility patches, rate-limit policy, auth/session behavior, and local-mode selection in v0.
+- Do not bundle raw Redis pub/sub, generic Lua, or full rate-limit compatibility into this probe.
 
 Execute:
 
-- Build a narrow v0 spike using local-sandbox interfaces for sandbox, profile, and service endpoints.
+- Add the smallest v0-side local bootstrap that reads `local-sandbox` `/profile`, extracts the host Redis endpoint, starts a local Upstash REST bridge, and points existing local-mode KV clients at it.
+- Prove a modified v0 `main` can use `local-sandbox` `services.key_value` for REST-shaped KV clients without broadly rewriting product code.
+- Preserve existing `web/data/kv/index.ts` compatibility behavior such as `hmset` filtering and `prompt` stringification.
+- Classify unsupported paths explicitly: `@upstash/ratelimit` fixed-window generic Lua and raw Redis pub/sub should remain out of scope unless the probe shows they are required for boot.
+- Added a v0-owned local bridge in `/Users/wycats/Code/v0.worktrees/kv-seam-recon` that reads daemon `/profile`, requires `services.key_value.health.status=ready`, extracts the host Redis endpoint, starts a loopback Upstash REST bridge, and injects the existing v0 REST env names.
+- Added a bounded smoke that starts `local-sandbox-daemon`, proves real `@upstash/redis` and `@vercel/kv` clients, proves `/pipeline`, imports the actual `chat/lib/kv.ts` and `apps/marketing/lib/kv.ts` seams, and verifies `web/data/utils/get-kv.ts` rewrites `KV_*` to `DEV_KV_*` before hitting the expected Node alias-loader boundary.
+- Kept the compatibility surface narrow: raw Redis pub/sub, generic Lua, and `@upstash/ratelimit` fixed-window remain explicitly unsupported.
+- Tightened targeted lock-script support to exact normalized `@upstash/lock@0.2.1` release/extend scripts only; smoke now rejects lock-shaped Lua smuggling through direct `EVAL`, `SCRIPT LOAD`, and `EVALSHA`.
 
 Review:
 
-- Proceed only if the v0 diff is centralized and deletes more local substrate code than it adds.
+- Proceed if the modified v0 diff is centralized around local bootstrap/client construction and can use the daemon-owned KV profile surface.
+- Stop and loop if the diff spreads across product call sites, if raw Redis pub/sub is required for the first usable milestone, if generic Lua/rate-limit support becomes mandatory, or if multiple products need the same daemon-owned Upstash REST compatibility endpoint.
+- Decide whether the bridge stays v0-owned for now or whether repeated product need justifies a future daemon-advertised Upstash REST endpoint.
+- The v0 diff stayed centralized: root package metadata plus `scripts/local-sandbox-kv-bridge.mjs` and `scripts/local-sandbox-kv-smoke.mjs`; no product call sites were changed.
+- Validation passed in the v0 worktree: `node --check` for both scripts, `pnpm install --frozen-lockfile --ignore-scripts`, `LOCAL_SANDBOX_DAEMON_BINARY=/Users/wycats/Code/local-sandbox/target/debug/local-sandbox-daemon pnpm local-sandbox:kv:smoke`, and `git diff --check`.
+- Smoke evidence covered profile readiness, host Redis endpoint taxonomy, v0-shaped env injection, real REST-shaped clients, product seams, exact `@upstash/lock` behavior, smuggled/generic Lua rejection, rate-limit unsupported classification, and raw pub/sub unsupported classification.
+- Bounded caveat: full v0 app boot was not attempted, and full `web/data/kv/index.ts` import remains blocked under plain Node by the `@` alias loader; the `getKv()` local env rewrite seam was proven.
+- Current disposition: keep the bridge v0-owned for this milestone. Revisit a daemon-advertised Upstash REST endpoint only if later v0 surfaces or other products need the same compatibility endpoint.
 
 ### PER 4 — operator surfaces
 
@@ -586,3 +615,4 @@ Review:
 - 2026-05-22: Sharpened the north star from extracted substrate to self-contained local-development infrastructure server. Default local services should be embedded when viable; external binaries such as MinIO are implementation strategies or parity backends, not the product boundary.
 - 2026-05-22: Latest stable Rust is acceptable for this project when it unlocks better embedded local infrastructure; MSRV should not block adopting a backend such as `pglite-oxide` if it proves to fit v0's Postgres expectations.
 - 2026-05-22: PER 3D.1 bumped the workspace to Rust 1.95 stable, but did not adopt `pglite-oxide 0.5.0` into the main workspace. The remaining blockers are the current S3 `sha2` prerelease dependency line, explicit username profile URLs, pooled-client failure/hangs beyond one connection, and inconsistent clean shutdown after pool scenarios. This is a call for narrower experiments, not a conclusion that Postgres or KV should stay out of `local-sandbox`.
+- 2026-05-23: Do not assume `v0-lima-rfc` as the v0 integration target. Use current v0 `main` as the target; Lima is prior art. The first usable current-main milestone should be a v0-owned local KV bootstrap/bridge that consumes `local-sandbox` Redis profile facts.
