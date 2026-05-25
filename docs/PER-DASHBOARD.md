@@ -508,6 +508,12 @@ These milestones describe the points where a modified current v0 `main` should b
 4. Route/proxy milestone: modified v0 `main` consumes profile/route facts for preview iframe, log websocket, lifecycle callback, S3 public endpoint, guest endpoint, and browser-visible URLs instead of composing local production-shaped URLs itself.
 5. Full local-dev milestone: modified v0 `main` can boot against `local-sandbox`-owned VM, object-storage, KV, route/proxy, and eventually Postgres surfaces without the old Lima scaffolding.
 
+Current milestone status:
+
+- KV adapter milestone: proven in PER 3F.
+- Object-storage milestone: host-side profile consumption proven in PER 3G; browser/guest-visible object storage remains route/proxy work.
+- Full local-dev milestone: first `v0chat` boot proof complete in PER 3H using daemon-owned KV and object-storage plus v0-owned product env bootstrap. This proves feasibility, not the final v0 design shape.
+
 ### PER 3E — embedded routes / proxy / HTTPS compatibility
 
 Status: planned
@@ -563,6 +569,61 @@ Review:
 - Smoke evidence covered profile readiness, host Redis endpoint taxonomy, v0-shaped env injection, real REST-shaped clients, product seams, exact `@upstash/lock` behavior, smuggled/generic Lua rejection, rate-limit unsupported classification, and raw pub/sub unsupported classification.
 - Bounded caveat: full v0 app boot was not attempted, and full `web/data/kv/index.ts` import remains blocked under plain Node by the `@` alias loader; the `getKv()` local env rewrite seam was proven.
 - Current disposition: keep the bridge v0-owned for this milestone. Revisit a daemon-advertised Upstash REST endpoint only if later v0 surfaces or other products need the same compatibility endpoint.
+
+### PER 3G — current-main v0 object-storage profile probe
+
+Status: implemented; bounded host-side object-storage profile probe complete
+
+Prepare:
+
+- Target current v0 `main`, not `v0-lima-rfc`.
+- Prove v0 can consume daemon-owned `services.object_storage` profile facts through a small S3-specific config seam.
+- Keep product bucket names, key layout, memory semantics, artifact semantics, and browser/guest/public URL policy in v0.
+- Do not move product bucket defaults or product upload flows into `local-sandbox`.
+
+Execute:
+
+- Added a v0 shared S3 config helper that maps `V0_LOCAL_SANDBOX_S3_*` env values into AWS SDK v3 `S3Client` config: endpoint, region, static credentials, and path-style addressing.
+- Preserved the existing OIDC AWS config as the fallback path when local-sandbox S3 env is absent.
+- Changed the product memory S3 surface to construct `S3Client` through the S3-specific helper rather than directly through OIDC config.
+- Proved host-side bucket create, object put/get, and product memory S3 access against daemon-owned embedded object storage using profile-derived facts.
+- Kept guest-visible, browser-visible, public object-storage URL, CORS, and presigned browser upload flows out of scope; those remain route/proxy compatibility work.
+
+Review:
+
+- Current v0 can consume daemon-owned object-storage profile facts without broad product rewrites.
+- The stable-looking seam is an S3 client config helper that selects local profile facts only when explicit local-sandbox S3 env is present.
+- Product bucket/key semantics stay in v0.
+- The proof should be split before PR: S3 helper plus one product S3 surface is a plausible small PR; the combined boot wrapper is proof scaffolding.
+
+### PER 3H — current-main v0 service-bootstrap boot probe
+
+Status: implemented; first `v0chat` boot proof complete; proof scaffold preserved locally
+
+Prepare:
+
+- Prove a real `v0chat` dev server can boot using local-sandbox-owned KV and object-storage service profile facts.
+- Keep Postgres external for this proof; daemon-owned Postgres remains a later PER 3D.PG track.
+- Keep product env defaults and local-mode product policy in v0.
+- Do not broaden the probe to full root `pnpm dev`; start with `v0chat` only.
+
+Execute:
+
+- Added a v0 proof bootstrap script that starts `local-sandbox-daemon` with free KV and object-storage ports, waits for `/profile`, starts a v0-owned Upstash REST bridge over the profile Redis endpoint, creates local S3 buckets, proves KV and S3 round trips, injects local bootstrap env, then runs the child dev command.
+- Added a v0 proof KV bridge script with exact normalized `@upstash/lock@0.2.1` release/extend Lua allowlist and explicit rejection of unsupported generic Lua and pub/sub paths.
+- Booted `v0chat` under Node 22 with Next/Turbopack on port 3012 using daemon-owned KV and embedded object storage.
+- Added bounded local-only product env defaults needed for boot probing: JWE secrets, VM token encryption keys, Knock API key, affiliate/referral coupon IDs, `BLOB_URL`, and `PG_LOCAL_URL` fallback.
+- Probed `/chat/api/app-api/openapi.json`, `/chat/api/platform-api/openapi.json`, and `/`; after cold-route compilation settled, both OpenAPI routes returned `200 OK` JSON and `/` returned `200 OK` HTML with middleware rewrite.
+- Found an unrelated v0 inefficiency while using App API OpenAPI as an early health probe: the route dynamically generated specs even though `api/openapi-app.*` is precompiled. v0 PR #24455 fixes that by serving the precompiled App API OpenAPI specs first and dynamically generating only as fallback.
+- Preserved the exact service-bootstrap proof state in the v0 worktree as commit `0a25eb322c` with message `WIP: preserve local-sandbox service bootstrap proof`.
+
+Review:
+
+- `local-sandbox` provided the service substrate needed for this proof: daemon profile readiness, Redis-compatible KV endpoint, and embedded S3-compatible object storage.
+- The remaining blockers encountered during boot were product env/bootstrap requirements, not local-sandbox service readiness failures.
+- The proof scaffold is not the final v0 design. It currently combines stable seams with local-only boot defaults and a large proof wrapper.
+- Keep the proof commit as evidence, but split future v0 PRs by stable seams: S3 config helper/product S3 usage first, then local service bootstrap/KV bridge only after deciding where product env bootstrap belongs.
+- Full local-dev still requires route/proxy compatibility and daemon-owned Postgres before the old Lima scaffolding can be deleted end to end.
 
 ### PER 4 — operator surfaces
 
