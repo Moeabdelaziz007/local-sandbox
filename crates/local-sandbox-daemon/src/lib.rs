@@ -2,12 +2,16 @@
 
 use axum::{
     body::Body,
-    extract::{OriginalUri, Path, Query, State},
+    extract::{
+        ws::{rejection::WebSocketUpgradeRejection, Message, WebSocket, WebSocketUpgrade},
+        OriginalUri, Path, Query, State,
+    },
     http::{header, HeaderMap, HeaderValue, Method, StatusCode},
     response::{IntoResponse, Response},
     routing::{any, get, post, put},
     Json, Router,
 };
+use futures_util::{SinkExt, StreamExt};
 use local_sandbox_core::{
     CommandId, CommandWait, CreateCommandRequest, CreateSandboxRequest, CreateSnapshotRequest,
     ExtendSandboxTimeoutRequest, InMemorySandboxProvider, LocalCredentials, LocalDaemonProfile,
@@ -25,6 +29,8 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
+use tokio::net::TcpStream;
+use tokio_tungstenite::{tungstenite, MaybeTlsStream, WebSocketStream};
 
 const PROXY_REQUEST_BODY_LIMIT_BYTES: usize = 64 * 1024 * 1024;
 const PROXY_RESPONSE_BODY_LIMIT_BYTES: usize = 64 * 1024 * 1024;
@@ -503,6 +509,7 @@ async fn proxy_route(
     State(state): State<DaemonState>,
     Path(path): Path<ProxyRoutePath>,
     OriginalUri(original_uri): OriginalUri,
+    ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
     method: Method,
     body: Body,
 ) -> Result<impl IntoResponse, ProxyError> {
@@ -510,6 +517,21 @@ async fn proxy_route(
     let target_url = route_target_http_url(&route)
         .ok_or_else(|| ProxyError::unsupported(path.sandbox_id, &path.route_name))?;
     let tail = encoded_proxy_tail(original_uri.path());
+    if let Ok(ws) = ws {
+        let upstream_url = upstream_proxy_ws_url(&target_url, tail, original_uri.query())?;
+        let (upstream, _response) = tokio::time::timeout(
+            PROXY_UPSTREAM_TIMEOUT,
+            tokio_tungstenite::connect_async(&upstream_url),
+        )
+        .await
+        .map_err(|error| {
+            ProxyError::provider(format!("upstream websocket connect timed out: {error}"))
+        })?
+        .map_err(|error| {
+            ProxyError::provider(format!("upstream websocket connect failed: {error}"))
+        })?;
+        return Ok(ws.on_upgrade(move |socket| proxy_websocket(socket, upstream)));
+    }
     let upstream_url = upstream_proxy_url(&target_url, tail, original_uri.query());
     let body = axum::body::to_bytes(body, PROXY_REQUEST_BODY_LIMIT_BYTES)
         .await
@@ -543,6 +565,76 @@ async fn proxy_route(
             .insert(header::CONTENT_TYPE, content_type);
     }
     Ok(response)
+}
+
+async fn proxy_websocket(socket: WebSocket, upstream: WebSocketStream<MaybeTlsStream<TcpStream>>) {
+    let (mut client_sender, mut client_receiver) = socket.split();
+    let (mut upstream_sender, mut upstream_receiver) = upstream.split();
+
+    let client_to_upstream = async {
+        while let Some(message) = client_receiver.next().await {
+            let message = message?;
+            if upstream_sender
+                .send(axum_message_to_tungstenite(message))
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+        Ok::<(), axum::Error>(())
+    };
+
+    let upstream_to_client = async {
+        while let Some(message) = upstream_receiver.next().await {
+            let Ok(message) = message else {
+                break;
+            };
+            if client_sender
+                .send(tungstenite_message_to_axum(message))
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+    };
+
+    tokio::select! {
+        _ = client_to_upstream => {}
+        () = upstream_to_client => {}
+    }
+}
+
+fn axum_message_to_tungstenite(message: Message) -> tungstenite::Message {
+    match message {
+        Message::Text(text) => tungstenite::Message::Text(text.to_string().into()),
+        Message::Binary(data) => tungstenite::Message::Binary(data),
+        Message::Ping(data) => tungstenite::Message::Ping(data),
+        Message::Pong(data) => tungstenite::Message::Pong(data),
+        Message::Close(frame) => {
+            tungstenite::Message::Close(frame.map(|frame| tungstenite::protocol::CloseFrame {
+                code: tungstenite::protocol::frame::coding::CloseCode::from(frame.code),
+                reason: frame.reason.to_string().into(),
+            }))
+        }
+    }
+}
+
+fn tungstenite_message_to_axum(message: tungstenite::Message) -> Message {
+    match message {
+        tungstenite::Message::Text(text) => Message::Text(text.to_string().into()),
+        tungstenite::Message::Binary(data) => Message::Binary(data),
+        tungstenite::Message::Ping(data) => Message::Ping(data),
+        tungstenite::Message::Pong(data) => Message::Pong(data),
+        tungstenite::Message::Close(frame) => {
+            Message::Close(frame.map(|frame| axum::extract::ws::CloseFrame {
+                code: u16::from(frame.code),
+                reason: frame.reason.to_string().into(),
+            }))
+        }
+        tungstenite::Message::Frame(_) => Message::Close(None),
+    }
 }
 
 struct ProxyError {
@@ -860,6 +952,23 @@ fn upstream_proxy_url(target_url: &str, tail: Option<&str>, query: Option<&str>)
         url.push_str(query);
     }
     url
+}
+
+fn upstream_proxy_ws_url(
+    target_url: &str,
+    tail: Option<&str>,
+    query: Option<&str>,
+) -> Result<String, ProxyError> {
+    let ws_url = if let Some(rest) = target_url.strip_prefix("http://") {
+        format!("ws://{rest}")
+    } else if let Some(rest) = target_url.strip_prefix("https://") {
+        format!("wss://{rest}")
+    } else {
+        return Err(ProxyError::provider(format!(
+            "unsupported upstream websocket URL: {target_url}"
+        )));
+    };
+    Ok(upstream_proxy_url(&ws_url, tail, query))
 }
 
 fn encoded_proxy_tail(path: &str) -> Option<&str> {
@@ -1435,6 +1544,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn proxy_route_proxies_websocket_messages_to_recorded_host_route() {
+        let (upstream_port, upstream) = start_websocket_upstream().await;
+        let app = test_router();
+        let sandbox = create_sandbox_with_route(&app, "preview", "http", upstream_port).await;
+        let (daemon_port, daemon) = start_daemon_upstream(app).await;
+
+        let (mut socket, _response) = tokio_tungstenite::connect_async(format!(
+            "ws://127.0.0.1:{daemon_port}/proxy/routes/{}/preview/ws/path?x=1",
+            sandbox.id
+        ))
+        .await
+        .unwrap();
+        socket
+            .send(tungstenite::Message::Text("hello".into()))
+            .await
+            .unwrap();
+        let response = socket.next().await.unwrap().unwrap();
+        daemon.abort();
+        upstream.abort();
+
+        assert_eq!(
+            response,
+            tungstenite::Message::Text("/ws/path?x=1:hello".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn proxy_route_returns_bad_gateway_when_websocket_upstream_is_unreachable() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let app = test_router();
+        let sandbox = create_sandbox_with_route(&app, "preview", "http", upstream_port).await;
+        let (daemon_port, daemon) = start_daemon_upstream(app).await;
+
+        let error = tokio_tungstenite::connect_async(format!(
+            "ws://127.0.0.1:{daemon_port}/proxy/routes/{}/preview",
+            sandbox.id
+        ))
+        .await
+        .unwrap_err();
+        daemon.abort();
+
+        assert!(matches!(
+            error,
+            tungstenite::Error::Http(response) if response.status() == StatusCode::BAD_GATEWAY
+        ));
+    }
+
+    #[tokio::test]
     async fn proxy_route_returns_bad_gateway_for_unreachable_upstream() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let upstream_port = listener.local_addr().unwrap().port();
@@ -1955,6 +2114,25 @@ mod tests {
         (port, handle)
     }
 
+    async fn start_websocket_upstream() -> (u16, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let app = Router::new().fallback(any(websocket_upstream));
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (port, handle)
+    }
+
+    async fn start_daemon_upstream(app: Router) -> (u16, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (port, handle)
+    }
+
     async fn echo_upstream(method: Method, uri: Uri, body: Body) -> impl IntoResponse {
         let body = axum::body::to_bytes(body, RESPONSE_BODY_LIMIT)
             .await
@@ -1972,6 +2150,22 @@ mod tests {
 
     async fn large_body_upstream() -> impl IntoResponse {
         (StatusCode::OK, "0123456789")
+    }
+
+    async fn websocket_upstream(ws: WebSocketUpgrade, uri: Uri) -> impl IntoResponse {
+        let path_and_query = uri
+            .path_and_query()
+            .map_or_else(|| uri.path().to_string(), ToString::to_string);
+        ws.on_upgrade(move |mut socket| async move {
+            while let Some(message) = socket.recv().await {
+                let Ok(Message::Text(text)) = message else {
+                    continue;
+                };
+                let _ = socket
+                    .send(Message::Text(format!("{path_and_query}:{text}").into()))
+                    .await;
+            }
+        })
     }
 
     async fn json_body<T: DeserializeOwned>(response: Response) -> T {

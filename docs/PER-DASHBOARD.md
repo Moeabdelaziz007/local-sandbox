@@ -516,7 +516,7 @@ Current milestone status:
 
 ### PER 3E — embedded routes / proxy / HTTPS compatibility
 
-Status: 3E.5 daemon-owned HTTP route proxy implemented; HTTPS/TLS still planned
+Status: 3E.6 daemon-owned WebSocket route proxy implemented; HTTPS/TLS still planned
 
 Prepare:
 
@@ -548,6 +548,9 @@ Execute:
 - 3E.5 changes daemon-produced active HTTP route browser facts to point at the daemon-owned namespace on the existing listener: `/proxy/routes/{sandbox_id}/{route_name}`. Host route facts remain direct to the recorded route URL.
 - 3E.5 adds minimal daemon HTTP proxy behavior for active HTTP sandbox routes: resolve by sandbox id and route name, forward method/path/query/body to the recorded host HTTP route URL, and return not-found, unsupported, or bad-gateway responses for missing/deleted routes, non-HTTP routes, and upstream failures.
 - 3E.5 keeps route health unknown and still does not add WebSocket upgrade proxying, HTTPS/WSS browser facts, public endpoints, TLS/trust setup, host-port allocation, readiness probing, callbacks, object-storage public URL policy, or v0 wiring.
+- 3E.6 adds daemon WebSocket upgrade proxying for active HTTP sandbox routes on the same `/proxy/routes/{sandbox_id}/{route_name}` namespace used by browser HTTP route facts.
+- 3E.6 preserves encoded tail path and query forwarding for WebSocket connections, converts recorded `http://` host route URLs to upstream `ws://` URLs, and proxies messages in both directions until either side closes.
+- 3E.6 keeps HTTPS/WSS browser facts, public endpoints, TLS/trust setup, host-port allocation, route readiness probing, callbacks, object-storage public URL policy, and v0 wiring out of scope.
 
 Review:
 
@@ -555,9 +558,9 @@ Review:
 - HTTPS support should not require `mkcert`, `openssl`, or hidden trust-store mutation.
 - Active route profile facts now carry explicit sandbox identity for daemon-produced routes, so URL uniqueness is no longer the route-profile discriminator.
 - Active route profile facts remain a daemon-local, create/delete-scoped inventory. Durable reconciliation from provider state is still future work before browser/proxy/TLS consumers depend on route profiles across daemon restarts.
-- The next route/proxy slice can build on explicit `sandbox_id` and daemon-owned HTTP proxy URLs, but should still keep WebSocket upgrade proxying, public endpoints, readiness, host-port allocation, HTTPS browser/WSS behavior, and TLS/trust as separate compatibility decisions.
+- The next route/proxy slice can build on explicit `sandbox_id` and daemon-owned HTTP/WebSocket proxy URLs, but should still keep public endpoints, readiness, host-port allocation, HTTPS browser/WSS behavior, and TLS/trust as separate compatibility decisions.
 - TypeScript consumers can now select route endpoint facts without composing product URLs or treating URLs as identifiers.
-- Browser and websocket endpoint selection is represented in the helper contract, and daemon-side production now exists for HTTP route facts only; HTTPS/WSS browser facts remain future proxy/TLS work.
+- Browser and websocket endpoint selection is represented in the helper contract, and daemon-side HTTP plus WebSocket proxying now exists for HTTP route facts only; HTTPS/WSS browser facts remain future proxy/TLS work.
 
 ### PER 3F — current-main v0 KV adapter probe
 
