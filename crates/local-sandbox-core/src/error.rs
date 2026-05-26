@@ -10,6 +10,8 @@ use thiserror::Error;
 pub enum SandboxErrorCode {
     /// Requested sandbox does not exist.
     SandboxNotFound,
+    /// Requested route does not exist within the sandbox.
+    RouteNotFound,
     /// Requested command does not exist within the sandbox.
     CommandNotFound,
     /// Operation is not supported by the active provider.

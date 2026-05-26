@@ -5,6 +5,9 @@ import {
   Command,
   LocalSandboxClient,
   Sandbox,
+  findLocalRouteEndpoint,
+  findLocalRouteProfile,
+  requireLocalRouteEndpoint,
 } from "../src/index.ts";
 
 test("Sandbox.create maps production-shaped options to daemon create", async () => {
@@ -128,7 +131,56 @@ test("LocalSandboxClient.getProfile reads the daemon profile route", async () =>
         health: { status: "unknown", message: null, checked_at_unix_ms: null },
         endpoints: [],
       },
-      routes: [],
+      routes: [
+        {
+          name: "preview",
+          sandbox_id: "sandbox-1",
+          target_port: 3000,
+          health: {
+            status: "unknown",
+            message: null,
+            checked_at_unix_ms: null,
+          },
+          endpoints: [
+            {
+              name: "host",
+              visibility: "host",
+              purpose: "sandbox_route",
+              protocol: "http",
+              url: "http://127.0.0.1:3000",
+              health: {
+                status: "unknown",
+                message: null,
+                checked_at_unix_ms: null,
+              },
+            },
+            {
+              name: "browser",
+              visibility: "browser",
+              purpose: "sandbox_route",
+              protocol: "http",
+              url: "http://127.0.0.1:3000",
+              health: {
+                status: "unknown",
+                message: null,
+                checked_at_unix_ms: null,
+              },
+            },
+            {
+              name: "browser_websocket",
+              visibility: "browser",
+              purpose: "websocket",
+              protocol: "ws",
+              url: "ws://127.0.0.1:3000",
+              health: {
+                status: "unknown",
+                message: null,
+                checked_at_unix_ms: null,
+              },
+            },
+          ],
+        },
+      ],
       services: {
         object_storage: {
           health: {
@@ -299,6 +351,56 @@ test("LocalSandboxClient.getProfile reads the daemon profile route", async () =>
   assert.equal(fetch.calls[0].init.signal, signal);
   assert.equal(profile.daemon.health.status, "ready");
   assert.equal(profile.sandbox.provider, "in_memory");
+  assert.deepEqual(profile.routes, [
+    {
+      name: "preview",
+      sandbox_id: "sandbox-1",
+      target_port: 3000,
+      health: {
+        status: "unknown",
+        message: null,
+        checked_at_unix_ms: null,
+      },
+      endpoints: [
+        {
+          name: "host",
+          visibility: "host",
+          purpose: "sandbox_route",
+          protocol: "http",
+          url: "http://127.0.0.1:3000",
+          health: {
+            status: "unknown",
+            message: null,
+            checked_at_unix_ms: null,
+          },
+        },
+        {
+          name: "browser",
+          visibility: "browser",
+          purpose: "sandbox_route",
+          protocol: "http",
+          url: "http://127.0.0.1:3000",
+          health: {
+            status: "unknown",
+            message: null,
+            checked_at_unix_ms: null,
+          },
+        },
+        {
+          name: "browser_websocket",
+          visibility: "browser",
+          purpose: "websocket",
+          protocol: "ws",
+          url: "ws://127.0.0.1:3000",
+          health: {
+            status: "unknown",
+            message: null,
+            checked_at_unix_ms: null,
+          },
+        },
+      ],
+    },
+  ]);
   assert.equal(profile.services.object_storage.endpoints[0].visibility, "host");
   assert.equal(
     profile.services.object_storage.endpoints[0].url,
@@ -351,6 +453,100 @@ test("LocalSandboxClient.getProfile reads the daemon profile route", async () =>
     false,
   );
   assert.equal(profile.services.database.endpoints[0].protocol, "postgres");
+});
+
+test("route profile helpers select duplicate route facts by sandbox id", () => {
+  const profile = routeSelectionProfile();
+
+  assert.equal(findLocalRouteProfile(profile, { name: "preview" }), undefined);
+
+  const route = findLocalRouteProfile(profile, {
+    sandboxId: "sandbox-b",
+    name: "preview",
+  });
+  assert.equal(route?.sandbox_id, "sandbox-b");
+  assert.equal(route?.name, "preview");
+
+  const match = findLocalRouteEndpoint(profile, {
+    sandboxId: "sandbox-b",
+    name: "preview",
+    visibility: "host",
+    purpose: "sandbox_route",
+    protocol: "http",
+  });
+  assert.equal(match?.route.sandbox_id, "sandbox-b");
+  assert.equal(match?.endpoint.url, "http://127.0.0.1:3000");
+});
+
+test("route endpoint helpers treat duplicate route selection as ambiguous", () => {
+  const profile = routeSelectionProfile();
+
+  assert.equal(
+    findLocalRouteEndpoint(profile, {
+      name: "preview",
+      visibility: "host",
+      purpose: "sandbox_route",
+      protocol: "http",
+    }),
+    undefined,
+  );
+  assert.throws(
+    () =>
+      requireLocalRouteEndpoint(profile, {
+        name: "preview",
+        visibility: "host",
+        purpose: "sandbox_route",
+        protocol: "http",
+      }),
+    /local route endpoint is ambiguous: name=preview, visibility=host, purpose=sandbox_route, protocol=http matched 2 endpoints/,
+  );
+});
+
+test("route endpoint helpers select browser and websocket endpoints", () => {
+  const profile = routeSelectionProfile();
+
+  const browser = requireLocalRouteEndpoint(profile, {
+    sandboxId: "sandbox-a",
+    name: "preview",
+    visibility: "browser",
+    purpose: "sandbox_route",
+    protocol: "http",
+  });
+  assert.equal(browser.endpoint.name, "browser");
+  assert.equal(
+    browser.endpoint.url,
+    "http://daemon.local:4567/proxy/routes/sandbox-a/preview",
+  );
+
+  const websocket = requireLocalRouteEndpoint(profile, {
+    sandboxId: "sandbox-a",
+    name: "logs",
+    visibility: "browser",
+    purpose: "websocket",
+    protocol: "ws",
+  });
+  assert.equal(websocket.endpoint.name, "browser_websocket");
+  assert.equal(
+    websocket.endpoint.url,
+    "ws://daemon.local:4567/proxy/routes/sandbox-a/logs",
+  );
+});
+
+test("route endpoint helpers return undefined or throw for missing endpoints", () => {
+  const profile = routeSelectionProfile();
+  const selector = {
+    sandboxId: "sandbox-a",
+    name: "preview",
+    visibility: "public",
+    purpose: "sandbox_route",
+    protocol: "https",
+  };
+
+  assert.equal(findLocalRouteEndpoint(profile, selector), undefined);
+  assert.throws(
+    () => requireLocalRouteEndpoint(profile, selector),
+    /local route endpoint not found: sandboxId=sandbox-a, name=preview, visibility=public, purpose=sandbox_route, protocol=https/,
+  );
 });
 
 test("Sandbox command/file/timeout/snapshot methods map to daemon routes", async () => {
@@ -614,4 +810,85 @@ function jsonResponse(body, status = 200) {
 
 function base64(value) {
   return Buffer.from(value, "utf8").toString("base64");
+}
+
+function routeSelectionProfile() {
+  const health = { status: "unknown", message: null, checked_at_unix_ms: null };
+  return {
+    daemon: { health, endpoints: [] },
+    sandbox: { provider: "in_memory", health, endpoints: [] },
+    routes: [
+      routeProfile({
+        name: "preview",
+        sandboxId: "sandbox-a",
+        targetPort: 3000,
+        endpoints: [
+          endpoint({
+            name: "host_preview",
+            visibility: "host",
+            purpose: "sandbox_route",
+            protocol: "http",
+            url: "http://127.0.0.1:3000",
+          }),
+          endpoint({
+            name: "browser",
+            visibility: "browser",
+            purpose: "sandbox_route",
+            protocol: "http",
+            url: "http://daemon.local:4567/proxy/routes/sandbox-a/preview",
+          }),
+        ],
+      }),
+      routeProfile({
+        name: "preview",
+        sandboxId: "sandbox-b",
+        targetPort: 3000,
+        endpoints: [
+          endpoint({
+            name: "host_preview",
+            visibility: "host",
+            purpose: "sandbox_route",
+            protocol: "http",
+            url: "http://127.0.0.1:3000",
+          }),
+        ],
+      }),
+      routeProfile({
+        name: "logs",
+        sandboxId: "sandbox-a",
+        targetPort: 3001,
+        endpoints: [
+          endpoint({
+            name: "browser_websocket",
+            visibility: "browser",
+            purpose: "websocket",
+            protocol: "ws",
+            url: "ws://daemon.local:4567/proxy/routes/sandbox-a/logs",
+          }),
+        ],
+      }),
+    ],
+    services: {},
+  };
+}
+
+function routeProfile({ name, sandboxId, targetPort, endpoints }) {
+  return {
+    name,
+    sandbox_id: sandboxId,
+    target_port: targetPort,
+    health: { status: "unknown", message: null, checked_at_unix_ms: null },
+    endpoints,
+  };
+}
+
+function endpoint({ name, visibility, purpose, protocol, url }) {
+  return {
+    name,
+    visibility,
+    purpose,
+    protocol,
+    url,
+    health: { status: "unknown", message: null, checked_at_unix_ms: null },
+  };
 }

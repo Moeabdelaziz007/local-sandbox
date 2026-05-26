@@ -98,6 +98,7 @@ export interface LocalSandboxProfile {
 
 export interface LocalRouteProfile {
   name: string;
+  sandbox_id?: string | null;
   target_port?: number | null;
   health: LocalHealth;
   endpoints: LocalEndpoint[];
@@ -192,6 +193,22 @@ export interface LocalEndpoint {
   health: LocalHealth;
 }
 
+export interface LocalRouteProfileSelector {
+  sandboxId?: string;
+  name?: string;
+}
+
+export interface LocalRouteEndpointSelector extends LocalRouteProfileSelector {
+  visibility: LocalEndpointVisibility;
+  purpose: LocalEndpointPurpose;
+  protocol: LocalEndpointProtocol;
+}
+
+export interface LocalRouteEndpointMatch {
+  route: LocalRouteProfile;
+  endpoint: LocalEndpoint;
+}
+
 export interface LocalHealth {
   status: LocalHealthStatus;
   message?: string | null;
@@ -212,6 +229,35 @@ export interface LocalCredentials {
   username?: string | null;
   password?: string | null;
   token?: string | null;
+}
+
+export function findLocalRouteProfile(
+  profile: LocalProfile,
+  selector: LocalRouteProfileSelector,
+): LocalRouteProfile | undefined {
+  return uniqueMatch(findMatchingRouteProfiles(profile, selector));
+}
+
+export function findLocalRouteEndpoint(
+  profile: LocalProfile,
+  selector: LocalRouteEndpointSelector,
+): LocalRouteEndpointMatch | undefined {
+  return uniqueMatch(findMatchingRouteEndpoints(profile, selector));
+}
+
+export function requireLocalRouteEndpoint(
+  profile: LocalProfile,
+  selector: LocalRouteEndpointSelector,
+): LocalRouteEndpointMatch {
+  const matches = findMatchingRouteEndpoints(profile, selector);
+  if (matches.length === 1) return matches[0]!;
+  const description = describeLocalRouteEndpointSelector(selector);
+  if (matches.length === 0) {
+    throw new Error(`local route endpoint not found: ${description}`);
+  }
+  throw new Error(
+    `local route endpoint is ambiguous: ${description} matched ${matches.length} endpoints`,
+  );
 }
 
 interface DaemonSandboxInfo {
@@ -751,6 +797,54 @@ function normalizeProfile(profile: LocalProfile): LocalProfile {
     service.logs ??= [];
   }
   return profile;
+}
+
+function findMatchingRouteProfiles(
+  profile: LocalProfile,
+  selector: LocalRouteProfileSelector,
+): LocalRouteProfile[] {
+  return profile.routes.filter(
+    (route) =>
+      (selector.sandboxId === undefined ||
+        route.sandbox_id === selector.sandboxId) &&
+      (selector.name === undefined || route.name === selector.name),
+  );
+}
+
+function findMatchingRouteEndpoints(
+  profile: LocalProfile,
+  selector: LocalRouteEndpointSelector,
+): LocalRouteEndpointMatch[] {
+  return findMatchingRouteProfiles(profile, selector).flatMap((route) =>
+    route.endpoints
+      .filter(
+        (endpoint) =>
+          endpoint.visibility === selector.visibility &&
+          endpoint.purpose === selector.purpose &&
+          endpoint.protocol === selector.protocol,
+      )
+      .map((endpoint) => ({ route, endpoint })),
+  );
+}
+
+function uniqueMatch<T>(matches: T[]): T | undefined {
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+function describeLocalRouteEndpointSelector(
+  selector: LocalRouteEndpointSelector,
+): string {
+  return [
+    selector.sandboxId === undefined
+      ? undefined
+      : `sandboxId=${selector.sandboxId}`,
+    selector.name === undefined ? undefined : `name=${selector.name}`,
+    `visibility=${selector.visibility}`,
+    `purpose=${selector.purpose}`,
+    `protocol=${selector.protocol}`,
+  ]
+    .filter((value) => value !== undefined)
+    .join(", ");
 }
 
 function getDefaultClient(): LocalSandboxClient {

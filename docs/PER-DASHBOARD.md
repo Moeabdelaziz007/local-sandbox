@@ -516,7 +516,7 @@ Current milestone status:
 
 ### PER 3E — embedded routes / proxy / HTTPS compatibility
 
-Status: planned
+Status: 3E.5 daemon-owned HTTP route proxy implemented; HTTPS/TLS still planned
 
 Prepare:
 
@@ -530,11 +530,34 @@ Execute:
 - Add compatibility tests for route URL helpers and local `subdomain` bridge behavior.
 - Implement daemon-owned HTTP/websocket/callback proxying where v0 currently carries local URL rewrites.
 - Add a TLS generation/trust plan before relying on browser HTTPS flows.
+- 3E.1 adds daemon-owned active route profile facts for existing sandbox routes without changing the `SandboxRoute` compatibility shape.
+- 3E.1 publishes active route facts through `GET /profile` as host-visible `sandbox_route` endpoints with unknown health, derived from routes returned by sandbox creation.
+- 3E.1 keeps the first slice intentionally narrow: no host-port allocation, no route readiness probing, no browser/public/websocket endpoints, no daemon proxying, and no TLS/trust behavior.
+- 3E.1 preserves existing TypeScript `Sandbox.routes` behavior and only extends profile preservation coverage.
+- 3E.2 adds optional route-profile `sandbox_id` to the Rust contract and TypeScript profile type while preserving `SandboxRoute`, `DaemonSandboxInfo`, and `Sandbox.routes` compatibility shapes.
+- 3E.2 makes daemon-produced active route profiles set `sandbox_id` from the sandbox that produced each route, so duplicate route names, ports, and direct-loopback URLs remain distinguishable.
+- 3E.2 documents route profile facts as volatile daemon-local state: recorded after successful create, removed after successful delete, and not reconciled from durable provider state yet.
+- 3E.2 adds contract and daemon tests for missing-`sandbox_id` compatibility, duplicate same-route identity, protocol flow-through, and failed-delete preservation of route facts.
+- 3E.2 still does not add host-port allocation, route readiness probing, browser/public/websocket endpoints, daemon proxying, or TLS/trust behavior.
+- 3E.3 adds product-neutral TypeScript route profile helpers that select by `sandboxId`, route `name`, endpoint `visibility`, `purpose`, and `protocol` only.
+- 3E.3 treats route URLs as endpoint facts rather than identity: duplicate route names, ports, and URLs remain distinguishable by `sandbox_id`.
+- 3E.3 adds synthetic TypeScript tests for duplicate sandbox selection, ambiguous route selection, browser endpoints, websocket endpoints, and missing endpoint behavior.
+- 3E.3 preserves `SandboxRoute`, `DaemonSandboxInfo`, and `Sandbox.routes` compatibility shapes and still does not add proxy listeners, browser/public endpoint emission by the daemon, TLS/trust, host-port allocation, route readiness probing, or v0 wiring.
+- 3E.4 makes daemon-produced active HTTP route profiles emit browser `sandbox_route` and browser `websocket` endpoint facts alongside the existing host route endpoint, all with unknown health and URLs derived from the recorded route URL.
+- 3E.4 keeps HTTPS and TCP route profiles host-only: no browser HTTPS/WSS facts, no public visibility, no proxy listener, no TLS/trust setup, no host-port allocation, no readiness probing, and no v0 wiring.
+- 3E.5 changes daemon-produced active HTTP route browser facts to point at the daemon-owned namespace on the existing listener: `/proxy/routes/{sandbox_id}/{route_name}`. Host route facts remain direct to the recorded route URL.
+- 3E.5 adds minimal daemon HTTP proxy behavior for active HTTP sandbox routes: resolve by sandbox id and route name, forward method/path/query/body to the recorded host HTTP route URL, and return not-found, unsupported, or bad-gateway responses for missing/deleted routes, non-HTTP routes, and upstream failures.
+- 3E.5 keeps route health unknown and still does not add WebSocket upgrade proxying, HTTPS/WSS browser facts, public endpoints, TLS/trust setup, host-port allocation, readiness probing, callbacks, object-storage public URL policy, or v0 wiring.
 
 Review:
 
 - v0 should stop composing production URL shapes from local `subdomain` values except through explicit compatibility helpers.
 - HTTPS support should not require `mkcert`, `openssl`, or hidden trust-store mutation.
+- Active route profile facts now carry explicit sandbox identity for daemon-produced routes, so URL uniqueness is no longer the route-profile discriminator.
+- Active route profile facts remain a daemon-local, create/delete-scoped inventory. Durable reconciliation from provider state is still future work before browser/proxy/TLS consumers depend on route profiles across daemon restarts.
+- The next route/proxy slice can build on explicit `sandbox_id` and daemon-owned HTTP proxy URLs, but should still keep WebSocket upgrade proxying, public endpoints, readiness, host-port allocation, HTTPS browser/WSS behavior, and TLS/trust as separate compatibility decisions.
+- TypeScript consumers can now select route endpoint facts without composing product URLs or treating URLs as identifiers.
+- Browser and websocket endpoint selection is represented in the helper contract, and daemon-side production now exists for HTTP route facts only; HTTPS/WSS browser facts remain future proxy/TLS work.
 
 ### PER 3F — current-main v0 KV adapter probe
 

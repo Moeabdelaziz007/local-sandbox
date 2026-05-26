@@ -573,10 +573,10 @@ fn parse_ttl_from_args(args: &[bytes::Bytes]) -> ReplayTtl {
 }
 
 fn remaining_from_epoch_secs(epoch_secs: u64) -> ReplayTtl {
-    let now_secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    remaining_from_epoch_secs_at(epoch_secs, now_epoch_secs())
+}
+
+fn remaining_from_epoch_secs_at(epoch_secs: u64, now_secs: u64) -> ReplayTtl {
     if epoch_secs > now_secs {
         ReplayTtl::Remaining(std::time::Duration::from_secs(epoch_secs - now_secs))
     } else {
@@ -585,15 +585,29 @@ fn remaining_from_epoch_secs(epoch_secs: u64) -> ReplayTtl {
 }
 
 fn remaining_from_epoch_ms(epoch_ms: u64) -> ReplayTtl {
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64;
+    remaining_from_epoch_ms_at(epoch_ms, now_epoch_ms())
+}
+
+fn remaining_from_epoch_ms_at(epoch_ms: u64, now_ms: u64) -> ReplayTtl {
     if epoch_ms > now_ms {
         ReplayTtl::Remaining(std::time::Duration::from_millis(epoch_ms - now_ms))
     } else {
         ReplayTtl::Expired
     }
+}
+
+fn now_epoch_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn now_epoch_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 #[cfg(test)]
@@ -602,11 +616,26 @@ mod tests {
     use crate::parser::Frame;
     use bytes::Bytes;
 
-    fn now_ms() -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64
+    #[test]
+    fn remaining_from_epoch_ms_at_returns_duration_for_future_epoch() {
+        match remaining_from_epoch_ms_at(11_500, 1_000) {
+            ReplayTtl::Remaining(duration) => {
+                assert_eq!(duration, std::time::Duration::from_millis(10_500));
+            }
+            ReplayTtl::None | ReplayTtl::Expired => panic!("expected remaining TTL"),
+        }
+    }
+
+    #[test]
+    fn remaining_from_epoch_ms_at_expires_current_or_past_epoch() {
+        assert!(matches!(
+            remaining_from_epoch_ms_at(1_000, 1_000),
+            ReplayTtl::Expired
+        ));
+        assert!(matches!(
+            remaining_from_epoch_ms_at(999, 1_000),
+            ReplayTtl::Expired
+        ));
     }
 
     // Build a raw AOF buffer containing a single SET command with PXAT.
@@ -623,8 +652,9 @@ mod tests {
 
     #[tokio::test]
     async fn replay_pxat_restores_remaining_ttl() {
-        // Key expires 10 seconds from now.
-        let expire_at = now_ms() + 10_000;
+        // Give the integration path a wide margin; exact time math is covered
+        // by the deterministic `remaining_from_epoch_ms_at` tests above.
+        let expire_at = now_epoch_ms() + 60 * 60 * 1000;
         let raw = aof_set_pxat("k", "v", expire_at);
 
         let store = Arc::new(Mutex::new(Store::new()));
@@ -633,13 +663,12 @@ mod tests {
         std::fs::remove_file(&tmp).ok();
 
         let ttl = store.lock().await.ttl("k");
-        assert!(ttl > 0 && ttl <= 10, "expected ttl in (0,10], got {ttl}");
+        assert!(ttl > 0, "expected positive ttl, got {ttl}");
     }
 
     #[tokio::test]
     async fn replay_pxat_skips_already_expired_key() {
-        // Key expired 1 second ago.
-        let expire_at = now_ms() - 1_000;
+        let expire_at = 1;
         let raw = aof_set_pxat("k", "v", expire_at);
 
         let store = Arc::new(Mutex::new(Store::new()));

@@ -26,7 +26,6 @@ s3-contract = [
   "dep:aws-smithy-types",
   "dep:aws-smithy-xml",
   "dep:crc-fast",
-  "dep:reqwest",
 ]
 kv-contract = ["dep:redis"]
 
@@ -62,7 +61,7 @@ aws-smithy-runtime-api = { workspace = true, optional = true }
 aws-smithy-types = { workspace = true, optional = true }
 aws-smithy-xml = { workspace = true, optional = true }
 crc-fast = { workspace = true, optional = true }
-reqwest = { version = "0.12.28", default-features = false, optional = true }
+reqwest = { version = "0.12.28", default-features = false }
 redis = { workspace = true, optional = true }
 
 [[test]]

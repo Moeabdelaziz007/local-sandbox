@@ -132,7 +132,7 @@ pub struct LocalProfile {
     pub daemon: LocalDaemonProfile,
     /// Sandbox provider facts.
     pub sandbox: LocalSandboxProfile,
-    /// Route endpoint facts known outside a specific sandbox response.
+    /// Active route endpoint facts known outside a specific sandbox response.
     #[serde(default)]
     pub routes: Vec<LocalRouteProfile>,
     /// Local service profiles keyed by product-neutral service name.
@@ -167,6 +167,9 @@ pub struct LocalSandboxProfile {
 pub struct LocalRouteProfile {
     /// Stable route label.
     pub name: String,
+    /// Sandbox identifier when this route is scoped to one sandbox.
+    #[serde(default)]
+    pub sandbox_id: Option<SandboxId>,
     /// Target port inside a sandbox, if the route is sandbox-scoped.
     pub target_port: Option<u16>,
     /// Route health.
@@ -774,6 +777,7 @@ mod tests {
     #[test]
     #[allow(clippy::too_many_lines)]
     fn serializes_local_profile_endpoint_taxonomy() {
+        let sandbox_id = SandboxId::new();
         let endpoint = LocalEndpoint {
             name: "public_objects".to_string(),
             visibility: LocalEndpointVisibility::Public,
@@ -812,6 +816,7 @@ mod tests {
             },
             routes: vec![LocalRouteProfile {
                 name: "preview".to_string(),
+                sandbox_id: Some(sandbox_id),
                 target_port: Some(3000),
                 health: unknown_health(),
                 endpoints: vec![LocalEndpoint {
@@ -882,6 +887,10 @@ mod tests {
         let value = serde_json::to_value(profile).unwrap();
         assert_eq!(value["sandbox"]["provider"], json!("vfkit"));
         assert_eq!(
+            value["routes"][0]["sandbox_id"],
+            json!(sandbox_id.to_string())
+        );
+        assert_eq!(
             value["routes"][0]["endpoints"][0]["visibility"],
             json!("browser")
         );
@@ -937,6 +946,25 @@ mod tests {
                 }
             })
         );
+    }
+
+    #[test]
+    fn deserializes_local_route_profile_without_sandbox_id() {
+        let route: LocalRouteProfile = serde_json::from_value(json!({
+            "name": "preview",
+            "target_port": 3000,
+            "health": {
+                "status": "unknown",
+                "message": null,
+                "checked_at_unix_ms": null
+            },
+            "endpoints": []
+        }))
+        .unwrap();
+
+        assert_eq!(route.name, "preview");
+        assert_eq!(route.sandbox_id, None);
+        assert_eq!(route.target_port, Some(3000));
     }
 
     fn profile_daemon() -> LocalDaemonProfile {
