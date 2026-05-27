@@ -1,0 +1,68 @@
+name: KV package compatibility
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 9 * * *"
+  pull_request:
+    paths:
+      - ".github/workflows/kv-package-compat.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/local-sandbox-core/**"
+      - "crates/local-sandbox-daemon/**"
+      - "crates/local-sandbox-services/**"
+      - "package.json"
+      - "packages/local-sandbox-client/**"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "rust-toolchain.toml"
+      - "vendor/tinyredis/**"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/kv-package-compat.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/local-sandbox-core/**"
+      - "crates/local-sandbox-daemon/**"
+      - "crates/local-sandbox-services/**"
+      - "package.json"
+      - "packages/local-sandbox-client/**"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "rust-toolchain.toml"
+      - "vendor/tinyredis/**"
+
+permissions:
+  contents: read
+
+jobs:
+  kv-package-compat:
+    name: KV package compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Enable pnpm
+        run: corepack enable
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build daemon
+        run: cargo build -p local-sandbox-daemon
+      - name: Run KV package compatibility smoke
+        env:
+          LOCAL_SANDBOX_RUN_KV_PACKAGE_COMPAT: "1"
+          LOCAL_SANDBOX_DAEMON_BINARY: ${{ github.workspace }}/target/debug/local-sandbox-daemon
+        run: node --test packages/local-sandbox-client/test/kv-package-compat.test.mjs
